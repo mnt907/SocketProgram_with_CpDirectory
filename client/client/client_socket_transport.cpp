@@ -40,18 +40,17 @@ namespace
         return user_input;
     }
 
-    bool IsExistFiles(const std::string& dir_path)
+    int CountFiles(const std::string& dir_path)
     {
-        bool is_exist_file = false;
-
 #ifdef _WIN32
+        int file_count = 0;
         auto dir = fs::recursive_directory_iterator(fs::path(dir_path));
 
         for (auto& p : dir)
         {
-            is_exist_file = true;
-            break;
+            file_count++;
         }
+        return file_count;
 #else
         DIR *dir_dirp = NULL;
         if ((dir_dirp = opendir(dir_path.c_str())) == NULL)
@@ -76,7 +75,7 @@ namespace
 
 #endif //_WIN32
 
-        return is_exist_file;
+
     }
 
     bool IsExistDiretory(const std::string& dir_path)
@@ -100,20 +99,16 @@ namespace
     }
 #include <errno.h>
 
-    bool CopyFiles(const std::string& src_path, const std::string& dst_path)
+    bool SendFileData(const std::string& src_path, SOCKET& socket)
     {
+  
+        send(socket, src_path.c_str(), PACKET_SIZE, 0);
+
         FILE* src_fp = NULL;
         src_fp = fopen(src_path.c_str(), "rb");
         if (src_fp == NULL)
         {
             std::cout << "can't create read_filepointer" << std::endl;
-            return false;
-        }
-
-        FILE* dst_fp = NULL;
-        if ((dst_fp = fopen(dst_path.c_str(), "wb")) == NULL)
-        {
-            std::cout << "can't create write_filepointer" << std::endl;
             return false;
         }
 
@@ -126,20 +121,25 @@ namespace
         }
         rewind(src_fp);
 
-        int file_buf_size = 256;
+        char* file_buf = (char*)malloc(PACKET_SIZE);
+        memset(file_buf, 0, PACKET_SIZE);
 
-        char* file_buf = (char*)malloc(file_buf_size);
-        memset(file_buf, 0, file_buf_size);
+        char send_buf[PACKET_SIZE] = { 0 };
+        char recv_buf[PACKET_SIZE] = { 0 };
 
-        int copy_number = file_size / file_buf_size;
-        int last_file_size = file_size % file_buf_size;
+        sprintf(send_buf, "%I64u", file_size);
+        send(socket, send_buf, PACKET_SIZE, 0);
+        std::cout << send_buf << std::endl;
+
+        int copy_number = file_size / PACKET_SIZE;
+        int last_file_size = file_size % PACKET_SIZE;
 
         for (int i = 0; i < copy_number; i++)
         {
-            memset(file_buf, 0, file_buf_size);
-            fread(file_buf, file_buf_size, 1, src_fp);
-            fwrite(file_buf, file_buf_size, 1, dst_fp);
-            memset(file_buf, 0, file_buf_size);
+            memset(file_buf, 0, PACKET_SIZE);
+            fread(file_buf, PACKET_SIZE, 1, src_fp);
+            send(socket, file_buf, PACKET_SIZE, 0);
+            memset(file_buf, 0, PACKET_SIZE);
         }
 
         if (last_file_size > 0)
@@ -148,41 +148,42 @@ namespace
             file_buf = (char*)malloc(last_file_size);
             memset(file_buf, 0, last_file_size);
             fread(file_buf, last_file_size, 1, src_fp);
-            fwrite(file_buf, last_file_size, 1, dst_fp);
+            send(socket, file_buf, last_file_size, 0);
             memset(file_buf, 0, last_file_size);
         }
 
         free(file_buf);
         fclose(src_fp);
-        fclose(dst_fp);
-
-        return true;
     }
 
-    bool CopyDirectory(const std::string& src_path, const std::string& dst_path)
+    bool DirectoryCopy(const std::string& src_path, SOCKET& socket)
     {
 #ifdef _WIN32
-        using namespace std;
-        auto dir = fs::recursive_directory_iterator(fs::path(src_path));
+        int file_count = CountFiles(src_path);
+        char send_buf[PACKET_SIZE] = { 0 };
+        sprintf(send_buf, "%d", file_count);
+        send(socket, send_buf, sizeof(send_buf), 0);
 
-        int src_path_length = src_path.length();
-        cout << src_path_length << endl;
+        auto dir = fs::recursive_directory_iterator(fs::path(src_path));
 
         for (const auto& file : dir)
         {
-            string file_path = file.path().generic_string();
+            std::string file_path = file.path().generic_string();
             file_path.assign(file_path.c_str(), src_path.length(), file_path.length());
+            std::cout << "file_path : " << file_path << std::endl;
 
-            const string dst_file_path = dst_path + file_path;
-            const string src_file_path = src_path + file_path;
+            const std::string src_file_path = src_path + file_path;
 
             if (IsExistDiretory(src_file_path))
             {
-                fs::create_directory(dst_file_path);
+                //make directory!!!!!!!!!!!!!
+                send(socket, file_path.c_str(), file_path.length(), 0);
             }
             else
             {
-                CopyFiles(src_file_path, dst_file_path);
+                strcpy(send_buf, "true");
+                send(socket, send_buf, PACKET_SIZE, 0);
+                SendFileData(src_file_path, socket);
             }
         }
         return true;
@@ -274,70 +275,8 @@ int main()
         std::cout << "connect errno : " << errno << std::endl;
     }
 
-    //------------------get file data --------------------------
-    const std::string src_path = "C:/Users/mnt/Desktop/empty_directory/setup_v4-190918 (2).zip";
-
-    FILE* src_fp = NULL;
-    src_fp = fopen(src_path.c_str(), "rb");
-    if (src_fp == NULL)
-    {
-        std::cout << "can't create read_filepointer" << std::endl;
-        return false;
-    }
-
-    _fseeki64(src_fp, (__int64)0, SEEK_END);
-    __int64 file_size = _ftelli64(src_fp);
-    if (file_size < 0)
-    {
-        printf("can't get a file's offset. errno(%d, %s)\r\n", errno, strerror(errno));
-        return false;
-    }
-    rewind(src_fp);
-
-    char* file_buf = (char*)malloc(PACKET_SIZE);
-    memset(file_buf, 0, PACKET_SIZE);
-
-    char send_buf[PACKET_SIZE] = { 0 };
-    char recv_buf[PACKET_SIZE] = { 0 };
-    bool check_equal_data = false;
-    //std::cout << "send file_size : " << file_size << std::endl;
-    //file_size = 23;
-    //sprintf(send_buf, "%d", file_size);
-    //std::cout << "send file_size : " << send_buf << std::endl;
-  
-    //send(client_socket, send_buf, PACKET_SIZE, 0);
-
-    int copy_number = file_size / PACKET_SIZE;
-    int last_file_size = file_size % PACKET_SIZE;
-
-    for (int i = 0; i < copy_number; i++)
-    {
-        memset(file_buf, 0, PACKET_SIZE);
-        fread(file_buf, PACKET_SIZE, 1, src_fp);
-        send(client_socket, file_buf, PACKET_SIZE, 0);
-        memset(file_buf, 0, PACKET_SIZE);
-        //std::cout << "copy : " << i << std::endl;
-    }
-
-    if (last_file_size > 0)
-    {
-        free(file_buf);
-        file_buf = (char*)malloc(last_file_size);
-        memset(file_buf, 0, last_file_size);
-        fread(file_buf, last_file_size, 1, src_fp);
-        send(client_socket, file_buf, last_file_size, 0);
-        memset(file_buf, 0, last_file_size);
-        std::cout << "last copy"<< std::endl;
-    }
-
-    free(file_buf);
-    fclose(src_fp);
-
-    //----------------------end---------------------------------
-    send(client_socket, send_buf, PACKET_SIZE, 0);
-
-    recv(client_socket, recv_buf, PACKET_SIZE, 0);
-    std::cout << recv_buf << std::endl;
+    const std::string src_path = "C:/Users/mnt/Desktop/empty_directory";
+    DirectoryCopy(src_path, client_socket);
 
     closesocket(client_socket);
 

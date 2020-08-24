@@ -3,6 +3,7 @@
 #include <sys/types.h>
 #ifdef _WIN32
 #include <WinSock2.h>
+#include <filesystem>
 #else
 #include <sys/socket.h>
 
@@ -16,8 +17,53 @@
 
 namespace
 {
+    bool SendFileData(const std::string& dst_path, SOCKET& socket)
+    {
+        char recv_buf[PACKET_SIZE] = { 0 };
+        recv(socket, recv_buf, PACKET_SIZE, 0);
+        const std::string dst_file_path = dst_path + recv_buf;
 
+        FILE* dst_fp = NULL;
+        dst_fp = fopen(dst_file_path.c_str(), "wb");
+        if (dst_fp == NULL)
+        {
+            std::cout << "can't create write_filepointer" << std::endl;
+            return false;
+        }
+
+        recv(socket, recv_buf, PACKET_SIZE, 0);
+        std::cout << recv_buf << std::endl;
+
+        __int64 file_size = _atoi64(recv_buf);
+        std::cout << file_size << std::endl;
+
+        int copy_number = file_size / PACKET_SIZE;
+        int last_file_size = file_size % PACKET_SIZE;
+        char* file_buf = (char*)malloc(PACKET_SIZE);
+        memset(file_buf, 0, PACKET_SIZE);
+
+        for (int i = 0; i < copy_number; i++)
+        {
+            memset(recv_buf, 0, PACKET_SIZE);
+            recv(socket, recv_buf, PACKET_SIZE, 0);
+            fwrite(recv_buf, PACKET_SIZE, 1, dst_fp);
+            memset(recv_buf, 0, PACKET_SIZE);
+        }
+
+        if (last_file_size > 0)
+        {
+            memset(recv_buf, 0, last_file_size);
+            recv(socket, recv_buf, last_file_size, 0);
+            fwrite(recv_buf, last_file_size, 1, dst_fp);
+            memset(recv_buf, 0, last_file_size);
+        }
+
+        free(file_buf);
+        fclose(dst_fp);
+    }
+    
 }
+
 
 bool main()
 {
@@ -40,12 +86,8 @@ bool main()
     if (bind(server_socket, (SOCKADDR*)&server_addr, sizeof(server_addr)) == -1)
         std::cout << "bind errno : " << errno << std::endl;
 
-    std::cout << "1" << std::endl;
-
     if (listen(server_socket, LISTEN_BACKLOG) == -1)
         std::cout << "listen errno : " << errno << std::endl;
-
-    std::cout << "1" << std::endl;
 
     int sockaddr_size = sizeof(SOCKADDR_IN);
     SOCKADDR_IN client_addr;
@@ -53,65 +95,29 @@ bool main()
     if (client_socket == -1)
         std::cout << "accept errno : " << errno << std::endl;
 
-    std::cout << "1" << std::endl;
+    const std::string dst_path = "C:/Users/mnt/Desktop/dd";
 
-    //----------------------------------------------------------
     char recv_buf[PACKET_SIZE] = { 0 };
-    bool check_equal_data = false;
+    recv(client_socket, recv_buf, PACKET_SIZE, 0);
+    int file_count = atoi(recv_buf);
 
-    //recv(client_socket, recv_buf, PACKET_SIZE, 0);
-    //
-    //std::cout << recv_buf << std::endl;
-    //std::cout << (int)recv_buf << std::endl;
-
-    FILE* dst_fp = NULL;
-    const std::string dst_path = "C:/Users/mnt/Desktop/dd/setup_v4-190918 (2).zip";
-    dst_fp = fopen(dst_path.c_str(), "wb");
-    if (dst_fp == NULL)
-    {
-        std::cout << "can't create write_filepointer" << std::endl;
-        return false;
-    }
-
-    __int64 file_size = 3490503494;
-
-    int copy_number = file_size / PACKET_SIZE;
-    int last_file_size = file_size % PACKET_SIZE;
-    char* file_buf = (char*)malloc(PACKET_SIZE);
-    memset(file_buf, 0, PACKET_SIZE);
-
-    for (int i = 0; i < copy_number; i++)
-    {
-        memset(file_buf, 0, PACKET_SIZE);
+    for (int i = 0; i < file_count; i++) {
         recv(client_socket, recv_buf, PACKET_SIZE, 0);
-        fwrite(file_buf, PACKET_SIZE, 1, dst_fp);
-        memset(file_buf, 0, PACKET_SIZE);
-        //std::cout << "copy : " << i << std::endl;
+
+        if (!strcmp(recv_buf, "true"))
+        {
+            std::string dst_file_path = dst_path + recv_buf;
+            std::cout << "dst_file_path : " << dst_file_path << std::endl;
+            SendFileData(dst_file_path, client_socket);
+        }
+        else
+        {
+            std::string dst_file_path = dst_path + recv_buf;
+            std::cout << "dst_file_path : " << dst_file_path << std::endl;
+            namespace fs = std::experimental::filesystem;
+            fs::create_directory(dst_file_path);
+        }
     }
-
-    if (last_file_size > 0)
-    {
-        free(file_buf);
-        file_buf = (char*)malloc(last_file_size);
-        memset(file_buf, 0, last_file_size);
-        recv(client_socket, recv_buf, last_file_size, 0);
-        fwrite(file_buf, last_file_size, 1, dst_fp);
-        memset(file_buf, 0, last_file_size);
-        std::cout << "last copy" << std::endl;
-    }
-
-    free(file_buf);
-    fclose(dst_fp);
-
-    //-----------------------------------------------------------
-    //char recv_buf[PACKET_SIZE] = { 0 };
-    //recv(client_socket, recv_buf, PACKET_SIZE, 0);
-    //std::cout << recv_buf << std::endl;
-
-
-
-    //char send_buf[] = "server send";
-    //send(client_socket, send_buf, sizeof(send_buf), 0);
 
     closesocket(server_socket);
     closesocket(client_socket);
