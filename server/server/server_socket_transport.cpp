@@ -17,20 +17,17 @@
 
 namespace
 {
-    bool SendFileData(const std::string& dst_path, SOCKET& socket)
+    bool RecvFileData(const std::string& dst_path, SOCKET& socket)
     {
-        char recv_buf[PACKET_SIZE] = { 0 };
-        recv(socket, recv_buf, PACKET_SIZE, 0);
-        const std::string dst_file_path = dst_path + recv_buf;
-
         FILE* dst_fp = NULL;
-        dst_fp = fopen(dst_file_path.c_str(), "wb");
+        dst_fp = fopen(dst_path.c_str(), "wb");
         if (dst_fp == NULL)
         {
             std::cout << "can't create write_filepointer" << std::endl;
             return false;
         }
 
+        char recv_buf[PACKET_SIZE] = { 0 };
         recv(socket, recv_buf, PACKET_SIZE, 0);
         std::cout << recv_buf << std::endl;
 
@@ -61,9 +58,36 @@ namespace
         free(file_buf);
         fclose(dst_fp);
     }
-    
-}
+    bool DirectoryCopy(const std::string& dst_path, SOCKET& socket)
+    {
+        char recv_buf[PACKET_SIZE] = { 0 };
+        recv(socket, recv_buf, PACKET_SIZE, 0);
+        int file_num = atoi(recv_buf);
 
+        for (int i = 0; i < file_num; i++) {
+
+            recv(socket, recv_buf, PACKET_SIZE, 0);
+            std::string file_path = recv_buf;
+            std::string dst_file_path = dst_path + recv_buf;
+            memset(recv_buf, 0, PACKET_SIZE);
+            std::cout << "dst_file_path : " << dst_file_path << std::endl;
+
+            recv(socket, recv_buf, PACKET_SIZE, 0);
+
+            if (!strcmp(recv_buf, "true") == true)
+            {
+                RecvFileData(dst_file_path, socket);
+            }
+            else
+            {
+                std::cout << "make directory" << std::endl;
+                namespace fs = std::experimental::filesystem;
+                fs::create_directory(dst_file_path);
+            }
+        }
+        return true;
+    }
+}
 
 bool main()
 {
@@ -96,29 +120,8 @@ bool main()
         std::cout << "accept errno : " << errno << std::endl;
 
     const std::string dst_path = "C:/Users/mnt/Desktop/dd";
-
-    char recv_buf[PACKET_SIZE] = { 0 };
-    recv(client_socket, recv_buf, PACKET_SIZE, 0);
-    int file_count = atoi(recv_buf);
-
-    for (int i = 0; i < file_count; i++) {
-        recv(client_socket, recv_buf, PACKET_SIZE, 0);
-
-        if (!strcmp(recv_buf, "true"))
-        {
-            std::string dst_file_path = dst_path + recv_buf;
-            std::cout << "dst_file_path : " << dst_file_path << std::endl;
-            SendFileData(dst_file_path, client_socket);
-        }
-        else
-        {
-            std::string dst_file_path = dst_path + recv_buf;
-            std::cout << "dst_file_path : " << dst_file_path << std::endl;
-            namespace fs = std::experimental::filesystem;
-            fs::create_directory(dst_file_path);
-        }
-    }
-
+    DirectoryCopy(dst_path, client_socket);
+    
     closesocket(server_socket);
     closesocket(client_socket);
 

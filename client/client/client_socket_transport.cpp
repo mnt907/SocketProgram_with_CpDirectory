@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <Windows.h>
 #include <fstream>
+#include <errno.h>
 #else
 #include <sys/socket.h>
 #include <dirent.h>
@@ -97,13 +98,9 @@ namespace
 #endif
         return false;
     }
-#include <errno.h>
 
     bool SendFileData(const std::string& src_path, SOCKET& socket)
     {
-  
-        send(socket, src_path.c_str(), PACKET_SIZE, 0);
-
         FILE* src_fp = NULL;
         src_fp = fopen(src_path.c_str(), "rb");
         if (src_fp == NULL)
@@ -159,10 +156,10 @@ namespace
     bool DirectoryCopy(const std::string& src_path, SOCKET& socket)
     {
 #ifdef _WIN32
-        int file_count = CountFiles(src_path);
+        int file_num = CountFiles(src_path);
         char send_buf[PACKET_SIZE] = { 0 };
-        sprintf(send_buf, "%d", file_count);
-        send(socket, send_buf, sizeof(send_buf), 0);
+        sprintf(send_buf, "%d", file_num);
+        send(socket, send_buf, PACKET_SIZE, 0);
 
         auto dir = fs::recursive_directory_iterator(fs::path(src_path));
 
@@ -173,16 +170,20 @@ namespace
             std::cout << "file_path : " << file_path << std::endl;
 
             const std::string src_file_path = src_path + file_path;
+            send(socket, file_path.c_str(), file_path.length(), 0);
+            Sleep(500);
 
             if (IsExistDiretory(src_file_path))
             {
-                //make directory!!!!!!!!!!!!!
-                send(socket, file_path.c_str(), file_path.length(), 0);
+                //make directory!!!!!!!!!!!!! 
+                strcpy(send_buf, "false");
+                send(socket, send_buf, PACKET_SIZE, 0);
             }
             else
             {
                 strcpy(send_buf, "true");
                 send(socket, send_buf, PACKET_SIZE, 0);
+
                 SendFileData(src_file_path, socket);
             }
         }
