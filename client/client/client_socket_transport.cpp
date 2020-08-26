@@ -23,23 +23,21 @@
 #pragma comment(lib, "ws2_32.lib")
 
 #define PORT 5555
-#define PACKET_SIZE 1024
-#define SERVER_IP "192.168.12.112"
+#define PACKET_SIZE 1400
+#define SERVER_IP "127.0.0.1"
+
+struct FileInfomation
+{
+    char file_path[256];
+    __int64 file_size;
+    bool is_directory;
+};
 
 namespace
 {
 #ifdef _WIN32
     namespace fs = std::experimental::filesystem;
 #endif //WIN32
-
-    std::string InputPath()
-    {
-        std::cout << "Enter the PATH" << std::endl;
-        std::string user_input;
-        std::cin >> user_input;
-        std::cout << user_input << std::endl;
-        return user_input;
-    }
 
     int CountFiles(const std::string& dir_path)
     {
@@ -75,8 +73,6 @@ namespace
         closedir(dir_dirp);
 
 #endif //_WIN32
-
-
     }
 
     bool IsExistDiretory(const std::string& dir_path)
@@ -99,18 +95,27 @@ namespace
         return false;
     }
 
-    bool SendFileData(const std::string& src_path, SOCKET& socket)
+    bool SendFileData(const std::string& src_path, SOCKET& socket, struct FileInfomation file_info)
     {
         FILE* src_fp = NULL;
         src_fp = fopen(src_path.c_str(), "rb");
-        if (src_fp == NULL)
+        if (file_info.is_directory != true)
         {
-            std::cout << "can't create read_filepointer" << std::endl;
+            if (src_fp == NULL)
+            {
+                std::cout << "can't create read_filepointer" << std::endl;
+                return false;
+            }
+        }
+        else 
+        {
+            file_info.file_size = 0;
+            send(socket, (char*)&file_info, sizeof(file_info), 0);
             return false;
         }
 
         _fseeki64(src_fp, (__int64)0, SEEK_END);
-        __int64 file_size = _ftelli64(src_fp);
+        const __int64 file_size = _ftelli64(src_fp);
         if (file_size < 0)
         {
             printf("can't get a file's offset. errno(%d, %s)\r\n", errno, strerror(errno));
@@ -118,45 +123,42 @@ namespace
         }
         rewind(src_fp);
 
-        char* file_buf = (char*)malloc(PACKET_SIZE);
-        memset(file_buf, 0, PACKET_SIZE);
+        file_info.file_size = file_size;
 
         char send_buf[PACKET_SIZE] = { 0 };
-        char recv_buf[PACKET_SIZE] = { 0 };
+        //send struct 
+        send(socket, (char*)&file_info, sizeof(file_info), 0);
+        std::cout << "file_path : " << file_info.file_path << std::endl;
+        std::cout << "file_size : " << file_info.file_size << std::endl;
+        std::cout << "is_directory : " << file_info.is_directory << std::endl;
 
-        sprintf(send_buf, "%I64u", file_size);
-        send(socket, send_buf, PACKET_SIZE, 0);
-        std::cout << send_buf << std::endl;
-
-        int copy_number = file_size / PACKET_SIZE;
-        int last_file_size = file_size % PACKET_SIZE;
+        const int copy_number = file_size / PACKET_SIZE;
+        const int last_file_size = file_size % PACKET_SIZE;
 
         for (int i = 0; i < copy_number; i++)
         {
-            memset(file_buf, 0, PACKET_SIZE);
-            fread(file_buf, PACKET_SIZE, 1, src_fp);
-            send(socket, file_buf, PACKET_SIZE, 0);
-            memset(file_buf, 0, PACKET_SIZE);
+            memset(send_buf, 0, PACKET_SIZE);
+            fread(send_buf, PACKET_SIZE, 1, src_fp);
+            send(socket, send_buf, PACKET_SIZE, 0);
+            memset(send_buf, 0, PACKET_SIZE);
+            
         }
-
+        Sleep(1);
         if (last_file_size > 0)
         {
-            free(file_buf);
-            file_buf = (char*)malloc(last_file_size);
-            memset(file_buf, 0, last_file_size);
-            fread(file_buf, last_file_size, 1, src_fp);
-            send(socket, file_buf, last_file_size, 0);
-            memset(file_buf, 0, last_file_size);
+            memset(send_buf, 0, last_file_size);
+            fread(send_buf, last_file_size, 1, src_fp);
+            send(socket, send_buf, last_file_size, 0);
+            memset(send_buf, 0, last_file_size);
         }
-
-        free(file_buf);
         fclose(src_fp);
     }
 
     bool DirectoryCopy(const std::string& src_path, SOCKET& socket)
     {
 #ifdef _WIN32
-        int file_num = CountFiles(src_path);
+        const int file_num = CountFiles(src_path);
+
         char send_buf[PACKET_SIZE] = { 0 };
         sprintf(send_buf, "%d", file_num);
         send(socket, send_buf, PACKET_SIZE, 0);
@@ -170,22 +172,16 @@ namespace
             std::cout << "file_path : " << file_path << std::endl;
 
             const std::string src_file_path = src_path + file_path;
-            send(socket, file_path.c_str(), file_path.length(), 0);
-            Sleep(500);
+
+            struct FileInfomation file_info;
+            strcpy(file_info.file_path, file_path.c_str());
 
             if (IsExistDiretory(src_file_path))
-            {
-                //make directory!!!!!!!!!!!!! 
-                strcpy(send_buf, "false");
-                send(socket, send_buf, PACKET_SIZE, 0);
-            }
+                file_info.is_directory = true;
             else
-            {
-                strcpy(send_buf, "true");
-                send(socket, send_buf, PACKET_SIZE, 0);
-
-                SendFileData(src_file_path, socket);
-            }
+                file_info.is_directory = false;
+               
+            SendFileData(src_file_path, socket, file_info);
         }
         return true;
 #else
@@ -277,6 +273,10 @@ int main()
     }
 
     const std::string src_path = "C:/Users/mnt/Desktop/empty_directory";
+
+    if (IsExistDiretory(src_path) == false)
+        return false;
+
     DirectoryCopy(src_path, client_socket);
 
     closesocket(client_socket);

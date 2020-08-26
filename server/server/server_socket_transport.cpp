@@ -1,5 +1,4 @@
 #include <iostream>
-
 #include <sys/types.h>
 #ifdef _WIN32
 #include <WinSock2.h>
@@ -12,12 +11,19 @@
 #pragma comment(lib, "ws2_32.lib")
 
 #define PORT 5555
-#define PACKET_SIZE 1024
+#define PACKET_SIZE 1400
 #define LISTEN_BACKLOG 50
+
+struct FileInfomation
+{
+    char file_path[256];
+    __int64 file_size;
+    bool is_directory;
+};
 
 namespace
 {
-    bool RecvFileData(const std::string& dst_path, SOCKET& socket)
+    bool RecvFileData(const std::string& dst_path, SOCKET& socket, struct FileInfomation file_info)
     {
         FILE* dst_fp = NULL;
         dst_fp = fopen(dst_path.c_str(), "wb");
@@ -27,17 +33,13 @@ namespace
             return false;
         }
 
-        char recv_buf[PACKET_SIZE] = { 0 };
-        recv(socket, recv_buf, PACKET_SIZE, 0);
-        std::cout << recv_buf << std::endl;
-
-        __int64 file_size = _atoi64(recv_buf);
+        const __int64 file_size = file_info.file_size;
         std::cout << file_size << std::endl;
 
-        int copy_number = file_size / PACKET_SIZE;
-        int last_file_size = file_size % PACKET_SIZE;
-        char* file_buf = (char*)malloc(PACKET_SIZE);
-        memset(file_buf, 0, PACKET_SIZE);
+        const int copy_number = file_size / PACKET_SIZE;
+        const int last_file_size = file_size % PACKET_SIZE;
+
+        char recv_buf[PACKET_SIZE] = { 0 };
 
         for (int i = 0; i < copy_number; i++)
         {
@@ -55,37 +57,62 @@ namespace
             memset(recv_buf, 0, last_file_size);
         }
 
-        free(file_buf);
         fclose(dst_fp);
+        return true;
     }
+
     bool DirectoryCopy(const std::string& dst_path, SOCKET& socket)
     {
+        struct FileInfomation file_info;
         char recv_buf[PACKET_SIZE] = { 0 };
-        recv(socket, recv_buf, PACKET_SIZE, 0);
-        int file_num = atoi(recv_buf);
+        int recvlen = recv(socket, recv_buf, PACKET_SIZE, 0);
+        const int file_num = atoi(recv_buf);
 
-        for (int i = 0; i < file_num; i++) {
+        for (int i = 0; i < file_num; i++) 
+        {
+            //memset(&file_info, 0, sizeof(file_info));
+            recvlen = recv(socket, (char*)&file_info, sizeof(file_info), 0);
+            std::cout << "file_path : " << file_info.file_path << std::endl;
+            std::cout << "file_size : " << file_info.file_size << std::endl;
+            std::cout << "is_directory : " << file_info.is_directory << std::endl;
 
-            recv(socket, recv_buf, PACKET_SIZE, 0);
-            std::string file_path = recv_buf;
-            std::string dst_file_path = dst_path + recv_buf;
-            memset(recv_buf, 0, PACKET_SIZE);
+            const std::string dst_file_path = dst_path + file_info.file_path;
             std::cout << "dst_file_path : " << dst_file_path << std::endl;
 
-            recv(socket, recv_buf, PACKET_SIZE, 0);
-
-            if (!strcmp(recv_buf, "true") == true)
-            {
-                RecvFileData(dst_file_path, socket);
-            }
-            else
+            if (file_info.is_directory == true)
             {
                 std::cout << "make directory" << std::endl;
                 namespace fs = std::experimental::filesystem;
                 fs::create_directory(dst_file_path);
             }
+            else
+            {
+                RecvFileData(dst_file_path, socket, file_info);
+            }
         }
         return true;
+    }
+
+    bool IsExistDiretory(const std::string& dir_path)
+    {
+        namespace fs = std::experimental::filesystem;
+        if (fs::is_directory(fs::path(dir_path)))
+        {
+            std::cout << "exists Directory" << std::endl;
+            return true;
+        }
+
+        std::cout << "not exists Directory" << std::endl;
+        return false;
+    }
+
+    std::string InputPath()
+    {
+        std::cout << "Enter the PATH" << std::endl;
+        std::string user_input;
+        std::cin >> user_input;
+        std::cout << user_input << std::endl;
+        return user_input;
     }
 }
 
@@ -120,10 +147,15 @@ bool main()
         std::cout << "accept errno : " << errno << std::endl;
 
     const std::string dst_path = "C:/Users/mnt/Desktop/dd";
+
+    if (IsExistDiretory(dst_path) == false)
+        return false;
+
     DirectoryCopy(dst_path, client_socket);
     
     closesocket(server_socket);
     closesocket(client_socket);
 
     WSACleanup();
+    return true;
 }
