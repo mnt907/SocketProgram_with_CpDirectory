@@ -191,7 +191,6 @@ namespace
                 return false;
             }
                 
-
             int sendlen = send(socket, send_buf, LAST_FILE_SIZE, 0);
             if (sendlen != LAST_FILE_SIZE)
             {
@@ -379,7 +378,6 @@ int main()
             std::cout << "can't check Directory" << std::endl;
             return EXIT_FAILURE;
         }
-            
 
         if (DirectoryCopy(src_path, client_socket) == false) 
         {

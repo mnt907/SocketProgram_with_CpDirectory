@@ -189,45 +189,78 @@ int main()
         return false;
     }
 
-    int sockaddr_size = sizeof(SOCKADDR_IN);
-    SOCKADDR_IN client_addr;
+    FD_SET read_set;
+    FD_SET tmp;
+    TIMEVAL time;
 
+    FD_ZERO(&read_set);
+    FD_SET(server_socket, &read_set);
+    unsigned int fd_max = server_socket;
     while (!_kbhit())
     {
-        SOCKET client_socket = accept(server_socket, (SOCKADDR*)&client_addr, &sockaddr_size);
-        if (client_socket == -1)
-        {
-            std::cout << "can't accept client_socket : " << std::endl;
+        tmp = read_set;
+
+        time.tv_sec = 1;
+        time.tv_usec = 0;
+
+        int req_count = select(fd_max + 1, &tmp, NULL, NULL, &time);
+        if (req_count == -1 || req_count == 0)
             continue;
-        }
 
-        char dst_path[PACKET_SIZE] = { 0 };
-        int recvlen = recv(client_socket, dst_path, PACKET_SIZE, 0);
-        if (recvlen != sizeof(dst_path))
+        for (unsigned int i = 0; i < read_set.fd_count; i++)
         {
-            std::cout << "can't recv dst_path : " << std::endl;
-            continue;
+            if (FD_ISSET(read_set.fd_array[i], &tmp))
+            {
+                SOCKADDR_IN client_addr;
+                int sockaddr_size = sizeof(SOCKADDR_IN);
+
+                if (read_set.fd_array[i] == server_socket)
+                {
+                    SOCKET client_socket = accept(server_socket, (SOCKADDR*)&client_addr, &sockaddr_size);
+                    if (client_socket == -1)
+                    {
+                        std::cout << "can't accept client_socket : " << std::endl;
+                        continue;
+                    }
+                    FD_SET(client_socket, &read_set);
+                    if (fd_max < client_socket)
+                        fd_max = client_socket;
+                }
+                else
+                {
+                    char dst_path[PACKET_SIZE] = { 0 };
+                    int recvlen = recv(read_set.fd_array[i], dst_path, PACKET_SIZE, 0);
+                    if (recvlen < 0)
+                    {
+                        std::cout << "can't recv dst_path : " << std::endl;
+                        FD_CLR(read_set.fd_array[i], &read_set);
+                        std::cout << "finish" << std::endl;
+                        closesocket(tmp.fd_array[i]);
+                        continue;
+                    }
+                    std::cout << "dst_path : " << dst_path << std::endl;
+
+                    if (IsExistDirectory(dst_path) == false)
+                    {
+                        std::cout << "can't check Directory" << std::endl;
+                        continue;
+                    }
+
+                    if (DirectoryCopy(dst_path, read_set.fd_array[i]) == false)
+                    {
+                        std::cout << "fail to copy directory" << std::endl;
+                        continue;
+                    }
+
+                    closesocket(read_set.fd_array[i]);
+
+                    std::cout << "end file copy" << std::endl;
+
+                }
+            }
         }
-        std::cout << "dst_path : " << dst_path << std::endl;
-
-        if (IsExistDirectory(dst_path) == false)
-        {
-            std::cout << "can't check Directory" << std::endl;
-            continue;
-        }
-
-        if (DirectoryCopy(dst_path, client_socket) == false)
-        {
-            std::cout << "fail to copy directory" << std::endl;
-            continue;
-        }
-
-        closesocket(client_socket);
-
-        std::cout << "end file copy" << std::endl;
-
     }
-    _getch();
+
     closesocket(server_socket);
 
     WSACleanup();
