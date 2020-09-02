@@ -9,6 +9,7 @@
 #include <Windows.h>
 #include <fstream>
 #include <WS2tcpip.h>
+#include <istream>
 #else
 #include <sys/socket.h>
 #include <dirent.h>
@@ -157,8 +158,8 @@ namespace
         std::cout << "file_size : " << file_info.file_size << std::endl;
         std::cout << "is_directory : " << file_info.is_directory << std::endl;
 
-        const int COPY_NUMBER = (int)FILE_SIZE / PACKET_SIZE;
-        const int LAST_FILE_SIZE = (int)FILE_SIZE % PACKET_SIZE;
+        const __int64 COPY_NUMBER = FILE_SIZE / PACKET_SIZE;
+        const int LAST_FILE_SIZE = FILE_SIZE % PACKET_SIZE;
 
         for (int i = 0; i < COPY_NUMBER; i++)
         {
@@ -309,16 +310,16 @@ namespace
     }
     std::string InputPath()
     {
-        std::string user_input_path;
-        std::cin >> user_input_path;
-        std::cout << user_input_path << "를 입력하였음" << std::endl;
+        char user_input_path[PACKET_SIZE];
+        std::cin.getline(user_input_path,7777,'\n');
+        std::cout << "input " << user_input_path  << std::endl;
         return user_input_path;
     }
 }
 
 int main()
 {
-    for (int i = 0; i < 1000; ++i)
+    while (1) 
     {
         WSADATA wsa_data;
         if (WSAStartup(MAKEWORD(2, 2), &wsa_data) == -1)
@@ -348,49 +349,73 @@ int main()
 
         char src_path[PACKET_SIZE] = { 0 };
         char dst_path[PACKET_SIZE] = { 0 };
+        bool input_check = false;
 
-        std::cout << "src_path입력 : ";
-        std::string input_path = InputPath();
-        strncpy_s(src_path, input_path.c_str()
-            , (sizeof(src_path) < input_path.length()) ?
-            sizeof(src_path) - 1 : input_path.length());
-
-        std::cout << std::endl;
-
-        std::cout << "dst_path입력 : ";
-        input_path.clear();
-        input_path = InputPath();
-        strncpy_s(dst_path, input_path.c_str()
-            , (sizeof(dst_path) < input_path.length()) ?
-            sizeof(dst_path) - 1 : input_path.length());
-
-        std::cout << std::endl;
-
-        int sendlen = send(client_socket, dst_path, sizeof(dst_path), 0);
-        if (sendlen != sizeof(dst_path)) 
+        while (input_check == false) 
         {
-            std::cout << "can't send dst_path" << std::endl;
-            return EXIT_FAILURE;
+            std::cout << "src_path input : ";
+            std::string input_path = InputPath();
+            strncpy_s(src_path, input_path.c_str()
+                , (sizeof(src_path) < input_path.length()) ?
+                sizeof(src_path) - 1 : input_path.length());
+
+            std::cout << std::endl;
+
+            std::cout << "dst_path input : ";
+            input_path.clear();
+            input_path = InputPath();
+            strncpy_s(dst_path, input_path.c_str()
+                , (sizeof(dst_path) < input_path.length()) ?
+                sizeof(dst_path) - 1 : input_path.length());
+
+            std::cout << std::endl;
+            if (!strcmp(src_path, dst_path))
+            {
+                std::cout << "same src_path and dst_path" << std::endl;
+                continue;
+            }
+
+            if (IsExistDirectory(src_path) == false)
+            {
+                std::cout << "invalid src_path" << std::endl;
+                continue;
+            }
+
+            int sendlen = send(client_socket, dst_path, sizeof(dst_path), 0);
+            if (sendlen != sizeof(dst_path))
+            {
+                std::cout << "can't send dst_path" << std::endl;
+                return EXIT_FAILURE;
+            }
+
+            int recvlen = recv(client_socket, (char*)&input_check, PACKET_SIZE, 0);
+            if (recvlen != PACKET_SIZE)
+            {
+                std::cout << "can't recv file_data" << std::endl;
+                continue;
+            }
+            else if (input_check == false)
+            {
+                std::cout << "invalid dst_path" << std::endl;
+                continue;
+            }
+
+            input_check = true;
         }
 
-        if (IsExistDirectory(src_path) == false) 
-        {
-            std::cout << "can't check Directory" << std::endl;
-            return EXIT_FAILURE;
-        }
 
-        if (DirectoryCopy(src_path, client_socket) == false) 
+
+
+        if (DirectoryCopy(src_path, client_socket) == false)
         {
             std::cout << "fail to copy directory" << std::endl;
             return EXIT_FAILURE;
         }
-            
+
         closesocket(client_socket);
 
         WSACleanup();
-
     }
-
     return 0;
 }
 

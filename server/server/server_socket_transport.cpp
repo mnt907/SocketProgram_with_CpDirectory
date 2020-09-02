@@ -38,10 +38,10 @@ namespace
 {
     bool RecvFileData(const std::string& dst_path, SOCKET& socket, FileInfomation& file_info)
     {
-        errno_t err;
+        errno_t write_fp_err;
         FILE* dst_fp = NULL;
-        err = fopen_s(&dst_fp, dst_path.c_str(), "wb");
-        if (err != 0)
+        write_fp_err = fopen_s(&dst_fp, dst_path.c_str(), "wb");
+        if (write_fp_err != 0)
         {
             std::cout << "can't create write_filepointer" << std::endl;
             return false;
@@ -50,8 +50,8 @@ namespace
         const __int64 FILE_SIZE = file_info.file_size;
         std::cout << FILE_SIZE << std::endl;
 
-        const int COPY_NUMBER = (int)FILE_SIZE / PACKET_SIZE;
-        const int LAST_FILE_SIZE = (int)FILE_SIZE % PACKET_SIZE;
+        const __int64 COPY_NUMBER = FILE_SIZE / PACKET_SIZE;
+        const int LAST_FILE_SIZE = FILE_SIZE % PACKET_SIZE;
 
         char recv_buf[PACKET_SIZE] = { 0 };
 
@@ -127,8 +127,6 @@ namespace
             {
                 std::cout << "make directory" << std::endl;
                 namespace fs = std::experimental::filesystem;
-                //if (fs::create_directory(DST_FILE_PATH) == false)
-                //    return false;
                 fs::create_directory(DST_FILE_PATH);
             }
             else
@@ -195,16 +193,28 @@ int main()
 
     FD_ZERO(&read_set);
     FD_SET(server_socket, &read_set);
-    unsigned int fd_max = server_socket;
     while (!_kbhit())
     {
         tmp = read_set;
 
         time.tv_sec = 1;
         time.tv_usec = 0;
+        unsigned int fd_max = 0;
+        for (unsigned int i = 0; i < read_set.fd_count; i++)
+        {
+            if (fd_max < read_set.fd_array[i])
+                fd_max = read_set.fd_array[i];
+            std::cout << "  " << read_set.fd_array[i] << std::endl;
+        }
 
         int req_count = select(fd_max + 1, &tmp, NULL, NULL, &time);
-        if (req_count == -1 || req_count == 0)
+
+        if (req_count == -1)
+        {
+            std::cout << "req_count error : " << errno <<std::endl;
+        }
+
+        if (req_count == 0)
             continue;
 
         for (unsigned int i = 0; i < read_set.fd_count; i++)
@@ -223,32 +233,49 @@ int main()
                         continue;
                     }
                     FD_SET(client_socket, &read_set);
-                    if (fd_max < client_socket)
-                        fd_max = client_socket;
                 }
                 else
                 {
                     char dst_path[PACKET_SIZE] = { 0 };
                     int recvlen = recv(read_set.fd_array[i], dst_path, PACKET_SIZE, 0);
-                    if (recvlen < 0)
+                    if (recvlen != PACKET_SIZE)
                     {
-                        std::cout << "can't recv dst_path : " << std::endl;
+                        std::cout << "can't recv file_data" << std::endl;
                         FD_CLR(read_set.fd_array[i], &read_set);
-                        std::cout << "finish" << std::endl;
+                        std::cout << "--------------------------finish----------------------------" << std::endl;
                         closesocket(tmp.fd_array[i]);
                         continue;
                     }
                     std::cout << "dst_path : " << dst_path << std::endl;
 
+                    bool input_check = true;
                     if (IsExistDirectory(dst_path) == false)
                     {
                         std::cout << "can't check Directory" << std::endl;
+                        input_check = false; 
+
+                        int sendlen = send(read_set.fd_array[i], (char*)&input_check, sizeof(dst_path), 0);
+                        
+                        if (sendlen != sizeof(dst_path))
+                        {
+                            std::cout << "can't send dst_path" << std::endl;
+                            continue;
+                        }
+                        continue;
+                    }
+                    int sendlen = send(read_set.fd_array[i], (char*)&input_check, sizeof(dst_path), 0);
+                    if (sendlen != sizeof(dst_path))
+                    {
+                        std::cout << "can't send input_check" << std::endl;
                         continue;
                     }
 
                     if (DirectoryCopy(dst_path, read_set.fd_array[i]) == false)
                     {
                         std::cout << "fail to copy directory" << std::endl;
+                        FD_CLR(read_set.fd_array[i], &read_set);
+                        std::cout << "--------------------------finish----------------------------" << std::endl;
+                        closesocket(tmp.fd_array[i]);
                         continue;
                     }
 
@@ -256,6 +283,10 @@ int main()
 
                     std::cout << "end file copy" << std::endl;
 
+                    FD_CLR(read_set.fd_array[i], &read_set);
+                    std::cout << "--------------------------finish----------------------------" << std::endl;
+                    closesocket(tmp.fd_array[i]);
+                    continue;
                 }
             }
         }
