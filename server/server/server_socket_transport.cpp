@@ -4,9 +4,7 @@
 #include <WinSock2.h>
 #include <filesystem>
 #include <conio.h>
-#include <conio.h>
 #include <cassert>
-#include <conio.h>
 #include <stdio.h>
 #else
 #include <sys/socket.h>
@@ -32,6 +30,22 @@ struct FileInfomation
     char file_path[256];
     __int64 file_size;
     bool is_directory;
+};
+
+struct Header
+{
+    Header()
+        : type(0)
+        , length(0)
+        , is_dir(false) 
+    {
+
+    }
+
+    int type;
+    int length;
+    bool is_dir;
+
 };
 
 namespace
@@ -97,47 +111,36 @@ namespace
 
     bool DirectoryCopy(const std::string& dst_path, SOCKET& socket)
     {
-        char recv_buf[PACKET_SIZE] = { 0 };
-        int recvlen = recv(socket, recv_buf, PACKET_SIZE, 0);
-        if (recvlen != PACKET_SIZE)
-        {
-            std::cout << "can't recv file_data" << std::endl;
-            return false;
-        }
-
-        const int FILE_NUM = atoi(recv_buf);
         struct FileInfomation file_info;
 
-        for (int i = 0; i < FILE_NUM; i++)
+        int recvlen = recv(socket, (char*)&file_info, sizeof(file_info), 0);
+        if (recvlen != sizeof(file_info))
         {
-            recvlen = recv(socket, (char*)&file_info, sizeof(file_info), 0);
-            if (recvlen != sizeof(file_info))
+            std::cout << "can't recv file_info" << std::endl;
+            return false;
+        }
+        std::cout << "file_path : " << file_info.file_path << std::endl;
+        std::cout << "file_size : " << file_info.file_size << std::endl;
+        std::cout << "is_directory : " << file_info.is_directory << std::endl;
+
+        const std::string DST_FILE_PATH = dst_path + file_info.file_path;
+        std::cout << "dst_file_path : " << DST_FILE_PATH << std::endl;
+
+        if (file_info.is_directory == true)
+        {
+            std::cout << "make directory" << std::endl;
+            namespace fs = std::experimental::filesystem;
+            fs::create_directory(DST_FILE_PATH);
+        }
+        else
+        {
+            if(RecvFileData(DST_FILE_PATH, socket, file_info) == false)
             {
-                std::cout << "can't recv file_info" << std::endl;
+                std::cout << "can't RecvFileData" << std::endl;
                 return false;
             }
-            std::cout << "file_path : " << file_info.file_path << std::endl;
-            std::cout << "file_size : " << file_info.file_size << std::endl;
-            std::cout << "is_directory : " << file_info.is_directory << std::endl;
-
-            const std::string DST_FILE_PATH = dst_path + file_info.file_path;
-            std::cout << "dst_file_path : " << DST_FILE_PATH << std::endl;
-
-            if (file_info.is_directory == true)
-            {
-                std::cout << "make directory" << std::endl;
-                namespace fs = std::experimental::filesystem;
-                fs::create_directory(DST_FILE_PATH);
-            }
-            else
-            {
-                if(RecvFileData(DST_FILE_PATH, socket, file_info) == false)
-                {
-                    std::cout << "can't RecvFileData" << std::endl;
-                    return false;
-                }
-            }
         }
+
         return true;
     }
 
@@ -187,18 +190,19 @@ int main()
         return false;
     }
 
-    FD_SET read_set;
-    FD_SET tmp;
+    FD_SET read_set, write_set;
+    FD_SET cpy_read_set, cpy_write_set;
     TIMEVAL time;
 
     FD_ZERO(&read_set);
+    FD_ZERO(&cpy_read_set);
     FD_SET(server_socket, &read_set);
+    char dst_path[PACKET_SIZE] = { 0 };
+
     while (!_kbhit())
     {
-        tmp = read_set;
+        cpy_read_set = read_set;
 
-        time.tv_sec = 1;
-        time.tv_usec = 0;
         unsigned int fd_max = 0;
         for (unsigned int i = 0; i < read_set.fd_count; i++)
         {
@@ -207,11 +211,14 @@ int main()
             std::cout << "  " << read_set.fd_array[i] << std::endl;
         }
 
-        int req_count = select(fd_max + 1, &tmp, NULL, NULL, &time);
+        time.tv_sec = 1;
+        time.tv_usec = 0;
+        int req_count = select(fd_max + 1, &cpy_read_set, NULL, NULL, &time);
 
-        if (req_count == -1)
+         if (req_count == -1)
         {
             std::cout << "req_count error : " << errno <<std::endl;
+            continue;
         }
 
         if (req_count == 0)
@@ -219,13 +226,13 @@ int main()
 
         for (unsigned int i = 0; i < read_set.fd_count; i++)
         {
-            if (FD_ISSET(read_set.fd_array[i], &tmp))
-            {
-                SOCKADDR_IN client_addr;
-                int sockaddr_size = sizeof(SOCKADDR_IN);
-
+            Header header;
+            if (FD_ISSET(read_set.fd_array[i], &cpy_read_set))
+            {      
                 if (read_set.fd_array[i] == server_socket)
                 {
+                    SOCKADDR_IN client_addr;
+                    int sockaddr_size = sizeof(SOCKADDR_IN);
                     SOCKET client_socket = accept(server_socket, (SOCKADDR*)&client_addr, &sockaddr_size);
                     if (client_socket == -1)
                     {
@@ -233,62 +240,95 @@ int main()
                         continue;
                     }
                     FD_SET(client_socket, &read_set);
+
+                    header.type = 1;
+                    int sendlen = send(client_socket, (char*)&header, sizeof(header), 0);
+                    if (sendlen != sizeof(header))
+                    {
+                        std::cout << "can't send header" << std::endl;
+                        return EXIT_FAILURE;
+                    }
                 }
                 else
-                {
-                    char dst_path[PACKET_SIZE] = { 0 };
-                    int recvlen = recv(read_set.fd_array[i], dst_path, PACKET_SIZE, 0);
-                    if (recvlen != PACKET_SIZE)
+                { 
+                    //recv struct
+                    int recvlen = recv(read_set.fd_array[i], (char*)&header, sizeof(header), 0);
+                    if (recvlen != sizeof(header))
                     {
                         std::cout << "can't recv file_data" << std::endl;
                         FD_CLR(read_set.fd_array[i], &read_set);
                         std::cout << "--------------------------finish----------------------------" << std::endl;
-                        closesocket(tmp.fd_array[i]);
+                        closesocket(cpy_read_set.fd_array[i]);  
                         continue;
                     }
-                    std::cout << "dst_path : " << dst_path << std::endl;
-
-                    bool input_check = true;
-                    if (IsExistDirectory(dst_path) == false)
+ 
+                    //is_directory
+                    
+                    if (header.type == 1)
                     {
-                        std::cout << "can't check Directory" << std::endl;
-                        input_check = false; 
-
-                        int sendlen = send(read_set.fd_array[i], (char*)&input_check, sizeof(dst_path), 0);
-                        
-                        if (sendlen != sizeof(dst_path))
+                        int recvlen = recv(read_set.fd_array[i], dst_path, header.length, 0);
+                        if (recvlen != header.length)
                         {
-                            std::cout << "can't send dst_path" << std::endl;
+                            std::cout << "can't recv dst_path" << std::endl;
+                            FD_CLR(read_set.fd_array[i], &read_set);
+                            std::cout << "--------------------------finish----------------------------" << std::endl;
+                            closesocket(cpy_read_set.fd_array[i]);
                             continue;
                         }
-                        continue;
-                    }
-                    int sendlen = send(read_set.fd_array[i], (char*)&input_check, sizeof(dst_path), 0);
-                    if (sendlen != sizeof(dst_path))
-                    {
-                        std::cout << "can't send input_check" << std::endl;
-                        continue;
+
+                        if (IsExistDirectory(dst_path))
+                        {
+                            header.is_dir = true;
+                            header.type = 2;
+                        }
+                        else 
+                        {
+                            std::cout << "can't check Directory" << std::endl;
+                            header.is_dir = false;
+                            header.type = 0;
+                            continue;
+                        }
+
+                        std::cout << "dst_path : " << dst_path << std::endl;
+
+                        header.type = 2;
+
+                        int sendlen = send(read_set.fd_array[i], (char*)&header, sizeof(header), 0);
+                        if (sendlen != sizeof(header))
+                        {
+                            std::cout << "can't send header" << std::endl;
+                            return EXIT_FAILURE;
+                        }
                     }
 
-                    if (DirectoryCopy(dst_path, read_set.fd_array[i]) == false)
+                    //file data      
+                    else if (header.type == 2)
                     {
-                        std::cout << "fail to copy directory" << std::endl;
+                        if (DirectoryCopy(dst_path, read_set.fd_array[i]) == false)
+                        {
+                            std::cout << "fail to copy directory" << std::endl;
+                            FD_CLR(read_set.fd_array[i], &read_set);
+                            std::cout << "--------------------------finish----------------------------" << std::endl;
+                            closesocket(cpy_read_set.fd_array[i]);
+                            continue;
+                        }
+
+                        std::cout << "end file copy" << std::endl;
+                    }
+                    else if (header.type == 3)
+                    {
                         FD_CLR(read_set.fd_array[i], &read_set);
                         std::cout << "--------------------------finish----------------------------" << std::endl;
-                        closesocket(tmp.fd_array[i]);
+                        closesocket(cpy_read_set.fd_array[i]);
                         continue;
                     }
 
-                    closesocket(read_set.fd_array[i]);
 
-                    std::cout << "end file copy" << std::endl;
-
-                    FD_CLR(read_set.fd_array[i], &read_set);
-                    std::cout << "--------------------------finish----------------------------" << std::endl;
-                    closesocket(tmp.fd_array[i]);
-                    continue;
                 }
             }
+
+
+
         }
     }
 

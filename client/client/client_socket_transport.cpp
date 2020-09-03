@@ -10,6 +10,7 @@
 #include <fstream>
 #include <WS2tcpip.h>
 #include <istream>
+#include <conio.h>
 #else
 #include <sys/socket.h>
 #include <dirent.h>
@@ -49,6 +50,21 @@ struct FileInfomation
     char file_path[256];
     __int64 file_size;
     bool is_directory;
+};
+struct Header
+{
+    Header()
+        : type(0)
+        , length(0)
+        , is_dir(false)
+    {
+
+    }
+
+    int type;
+    int length;
+    bool is_dir;
+
 };
 
 namespace
@@ -205,22 +221,22 @@ namespace
         return true;
     }
 
-    bool DirectoryCopy(const std::string& src_path, SOCKET& socket)
+    bool DirectoryCopy(const std::string& src_path, SOCKET& socket, Header& header)
     {
 #ifdef _WIN32
         char send_buf[PACKET_SIZE] = { 0 };
-        sprintf_s(send_buf, "%d", CountFiles(src_path));
-        int sendlen = send(socket, send_buf, PACKET_SIZE, 0);
-        if (sendlen != PACKET_SIZE)
-        {
-            std::cout << "can't send count_files" << std::endl;
-            return false;
-        }
 
         auto dir = fs::recursive_directory_iterator(fs::path(src_path));
 
         for (const auto& file : dir)
         {
+            int sendlen = send(socket, (char*)&header, sizeof(header), 0);
+            if (sendlen != sizeof(header))
+            {
+                std::cout << "can't send header" << std::endl;
+                continue;
+            }
+
             std::string file_path = file.path().generic_string();
             file_path.assign(file_path.c_str(), src_path.length(), file_path.length());
             std::cout << "file_path : " << file_path << std::endl;
@@ -346,72 +362,116 @@ int main()
             std::cout << "connect errno : " << errno << std::endl;
             return EXIT_FAILURE;
         }
+        Header header;
+        header.type = 1;
+        FD_SET write_set, read_set;
+        FD_SET cpy_write_set, cpy_read_set;
+        TIMEVAL time;
 
+        FD_ZERO(&read_set);
+        FD_ZERO(&cpy_read_set);
+        FD_SET(client_socket, &read_set);
         char src_path[PACKET_SIZE] = { 0 };
         char dst_path[PACKET_SIZE] = { 0 };
-        bool input_check = false;
 
-        while (input_check == false) 
+        while (!_kbhit()) 
         {
-            std::cout << "src_path input : ";
-            std::string input_path = InputPath();
-            strncpy_s(src_path, input_path.c_str()
-                , (sizeof(src_path) < input_path.length()) ?
-                sizeof(src_path) - 1 : input_path.length());
+            cpy_read_set = read_set;
 
-            std::cout << std::endl;
+            time.tv_sec = 1;
+            time.tv_usec = 0;
+            int req_count = select(client_socket + 1, &cpy_read_set, NULL, NULL, &time);
 
-            std::cout << "dst_path input : ";
-            input_path.clear();
-            input_path = InputPath();
-            strncpy_s(dst_path, input_path.c_str()
-                , (sizeof(dst_path) < input_path.length()) ?
-                sizeof(dst_path) - 1 : input_path.length());
-
-            std::cout << std::endl;
-            if (!strcmp(src_path, dst_path))
+            if (req_count == -1)
             {
-                std::cout << "same src_path and dst_path" << std::endl;
+                std::cout << "req_count error : " << errno << std::endl;
                 continue;
             }
 
-            if (IsExistDirectory(src_path) == false)
-            {
-                std::cout << "invalid src_path" << std::endl;
+            if (req_count == 0)
                 continue;
-            }
 
-            int sendlen = send(client_socket, dst_path, sizeof(dst_path), 0);
-            if (sendlen != sizeof(dst_path))
-            {
-                std::cout << "can't send dst_path" << std::endl;
-                return EXIT_FAILURE;
-            }
 
-            int recvlen = recv(client_socket, (char*)&input_check, PACKET_SIZE, 0);
-            if (recvlen != PACKET_SIZE)
+            if (FD_ISSET(client_socket, &cpy_read_set))
             {
-                std::cout << "can't recv file_data" << std::endl;
-                continue;
-            }
-            else if (input_check == false)
-            {
-                std::cout << "invalid dst_path" << std::endl;
-                continue;
-            }
+                int recvlen = recv(client_socket, (char*)&header, sizeof(header), 0);
+                if (recvlen != sizeof(header))
+                {
+                    std::cout << "can't recv header" << std::endl;
+                    return EXIT_FAILURE;
+                }
 
-            input_check = true;
+
+
+                bool input_check = false;
+
+                if (header.type == 1)
+                {
+                    std::cout << "src_path input : ";
+                    std::string input_path = InputPath();
+                    strncpy_s(src_path, input_path.c_str()
+                        , (sizeof(src_path) < input_path.length()) ?
+                        sizeof(src_path) - 1 : input_path.length());
+
+                    std::cout << std::endl;
+
+                    std::cout << "dst_path input : ";
+                    input_path.clear();
+                    input_path = InputPath();
+                    strncpy_s(dst_path, input_path.c_str()
+                        , (sizeof(dst_path) < input_path.length()) ?
+                        sizeof(dst_path) - 1 : input_path.length());
+
+                    std::cout << std::endl;
+                    if (!strcmp(src_path, dst_path))
+                    {
+                        std::cout << "same src_path and dst_path" << std::endl;
+                        continue;
+                    }
+
+                    if (IsExistDirectory(src_path) == false)
+                    {
+                        std::cout << "invalid src_path" << std::endl;
+                        continue;
+                    }
+
+                    header.length = strlen(dst_path);
+
+                    int sendlen = send(client_socket, (char*)&header, sizeof(header), 0);
+                    if (sendlen != sizeof(header))
+                    {
+                        std::cout << "can't send header" << std::endl;
+                        continue;
+                    }
+
+                    sendlen = send(client_socket, dst_path, header.length, 0);
+                    if (sendlen != header.length)
+                    {
+                        std::cout << "can't send dst_path" << std::endl;
+                        return EXIT_FAILURE;
+                    }
+
+                }
+                else if (header.type == 2)
+                {
+
+
+                    if (DirectoryCopy(src_path, client_socket, header) == false)
+                    {
+                        std::cout << "fail to copy directory" << std::endl;
+                        return EXIT_FAILURE;
+                    }
+
+                    header.type = 3;
+                    int sendlen = send(client_socket, (char*)&header, sizeof(header), 0);
+                    if (sendlen != sizeof(header))
+                    {
+                        std::cout << "can't send header" << std::endl;
+                        return EXIT_FAILURE;
+                    }
+                }
+            }           
         }
-
-
-
-
-        if (DirectoryCopy(src_path, client_socket) == false)
-        {
-            std::cout << "fail to copy directory" << std::endl;
-            return EXIT_FAILURE;
-        }
-
         closesocket(client_socket);
 
         WSACleanup();
