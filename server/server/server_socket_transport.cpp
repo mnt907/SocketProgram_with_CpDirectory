@@ -7,6 +7,7 @@
 #include <cassert>
 #include <stdio.h>
 #include <map>
+#include <thread>
 #else
 #include <sys/socket.h>
 
@@ -122,7 +123,7 @@ namespace
         return true;
     }
 
-    bool DirectoryCopy(std::string dst_path, SOCKET& socket, Header& file_info)
+    bool DirectoryCopy(std::string dst_path, SOCKET socket, Header file_info)
     {
         std::cout << "file_path : " << file_info.file_path << std::endl;
         std::cout << "file_size : " << file_info.length << std::endl;
@@ -159,6 +160,103 @@ namespace
         }
         std::cout << "not exists Directory" << std::endl;
         return false;
+    }
+
+    void CopyDirectoryThread(SOCKET socket)
+    {
+        FD_SET read_set;
+        FD_SET cpy_read_set;
+        TIMEVAL time;
+        FD_ZERO(&read_set);
+        FD_ZERO(&cpy_read_set);
+        FD_SET(socket, &read_set);
+        Header header;
+        std::string dst_path;
+
+        while (true) 
+        {
+            cpy_read_set = read_set;
+            time.tv_sec = 1;
+            time.tv_usec = 0;
+            
+            int req_count = select(socket + 1, &cpy_read_set, NULL, NULL, &time);
+
+            if (req_count == -1)
+            {
+                std::cout << "req_count error : " << errno << std::endl;
+                continue;
+            }
+
+            if (req_count == 0)
+                continue;
+
+            if (FD_ISSET(socket, &cpy_read_set))
+            {
+                //recv struct
+                int recvlen = recv(socket, (char*)&header, sizeof(header), 0);
+                if (recvlen != sizeof(header))
+                {
+                    std::cout << "can't recv file_data" << std::endl;
+                    FD_CLR(socket, &read_set);
+                    std::cout << "--------------------------finish----------------------------" << std::endl;
+                    closesocket(socket);
+                    break;
+                }
+
+                if (header.type == 1)
+                {
+                    if (IsExistDirectory(header.file_path))
+                    {
+                        header.is_dir = true;
+                        header.type = 2;
+                    }
+                    else
+                    {
+                        std::cout << "can't check Directory" << std::endl;
+                        header.is_dir = false;
+                        header.type = 0;
+                        break;
+                    }
+
+                    dst_path = header.file_path;
+                    std::cout << "dst_path : " << dst_path << std::endl;
+
+                    int sendlen = send(socket, (char*)&header, sizeof(header), 0);
+                    if (sendlen != sizeof(header))
+                    {
+                        std::cout << "can't send header" << std::endl;
+                        break;
+                    }
+                }
+                else if (header.type == 2)
+                {
+                    if (DirectoryCopy(dst_path, socket, header) == false)
+                    {
+                        std::cout << "fail to copy directory" << std::endl;
+                        FD_CLR(socket, &read_set);
+                        std::cout << "--------------------------finish----------------------------" << std::endl;
+                        closesocket(socket);
+                        break;
+                    }
+
+                    std::cout << "end file copy" << std::endl;
+                }
+                else if (header.type == 3)
+                {
+                    int sendlen = send(socket, (char*)&header, sizeof(header), 0);
+                    if (sendlen != sizeof(header))
+                    {
+                        std::cout << "can't send header" << std::endl;
+                        break;
+                    }
+
+                    FD_CLR(socket, &read_set);
+                    std::cout << std::this_thread::get_id() << "--------------------------finish----------------------------" << std::endl;
+                    closesocket(socket);
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -198,27 +296,18 @@ int main()
     FD_SET read_set;
     FD_SET cpy_read_set;
     TIMEVAL time;
-
     FD_ZERO(&read_set);
     FD_ZERO(&cpy_read_set);
     FD_SET(server_socket, &read_set);
 
-    std::map<int, std::string> dst_path;
+    std::vector<std::thread> cpy_dir_threads;
     while (!_kbhit())
     {
+        std::cout << "asdfSasdfadf" << std::endl;
         cpy_read_set = read_set;
-
-        unsigned int fd_max = 0;
-        for (unsigned int i = 0; i < read_set.fd_count; i++)
-        {
-            if (fd_max < read_set.fd_array[i])
-                fd_max = read_set.fd_array[i];
-            std::cout << "  " << read_set.fd_array[i] << std::endl;
-        }
-
         time.tv_sec = 1;
         time.tv_usec = 0;
-        int req_count = select(fd_max + 1, &cpy_read_set, NULL, NULL, &time);
+        int req_count = select(server_socket + 1, &cpy_read_set, NULL, NULL, &time);
 
          if (req_count == -1)
          {
@@ -229,97 +318,27 @@ int main()
         if (req_count == 0)
             continue;
 
-        for (unsigned int i = 0; i < read_set.fd_count; i++)
-        {
-            Header header;
+        Header header;
             
-            if (FD_ISSET(read_set.fd_array[i], &cpy_read_set))
-            {      
-                if (read_set.fd_array[i] == server_socket)
-                {
-                    SOCKADDR_IN client_addr;
-                    int sockaddr_size = sizeof(SOCKADDR_IN);
-                    SOCKET client_socket = accept(server_socket, (SOCKADDR*)&client_addr, &sockaddr_size);
-                    if (client_socket == -1)
-                    {
-                        std::cout << "can't accept client_socket : " << std::endl;
-                        continue;
-                    }
-                    FD_SET(client_socket, &read_set);
-
-                }
-                else
-                { 
-                    //recv struct
-                    int recvlen = recv(read_set.fd_array[i], (char*)&header, sizeof(header), 0);
-                    if (recvlen != sizeof(header))
-                    {
-                        std::cout << "can't recv file_data" << std::endl;
-                        FD_CLR(read_set.fd_array[i], &read_set);
-                        std::cout << "--------------------------finish----------------------------" << std::endl;
-                        closesocket(cpy_read_set.fd_array[i]);  
-                        continue;
-                    }
-
-                    if (header.type == 1)
-                    {
-                        if (IsExistDirectory(header.file_path))
-                        {
-                            header.is_dir = true;
-                            header.type = 2;
-                        }
-                        else 
-                        {
-                            std::cout << "can't check Directory" << std::endl;
-                            header.is_dir = false;
-                            header.type = 0;
-                            continue;
-                        }
-
-                        std::cout << "dst_path : " << header.file_path << std::endl;
-
-                        dst_path.insert(std::make_pair(i, header.file_path));
-                        std::cout << dst_path.find(i)->second << std::endl;
-
-                        int sendlen = send(read_set.fd_array[i], (char*)&header, sizeof(header), 0);
-                        if (sendlen != sizeof(header))
-                        {
-                            std::cout << "can't send header" << std::endl;
-                            return EXIT_FAILURE;
-                        }
-                    }
-                    else if (header.type == 2)
-                    {
-                        std::map<int, std::string>::iterator dst = dst_path.find(i);
-                        if (DirectoryCopy(dst->second, read_set.fd_array[i], header) == false)
-                        {
-                            std::cout << "fail to copy directory" << std::endl;
-                            FD_CLR(read_set.fd_array[i], &read_set);
-                            std::cout << "--------------------------finish----------------------------" << std::endl;
-                            closesocket(cpy_read_set.fd_array[i]);
-                            continue;
-                        }
-
-                        std::cout << "end file copy" << std::endl;
-                    }
-                    else if (header.type == 3)
-                    {
-                        int sendlen = send(read_set.fd_array[i], (char*)&header, sizeof(header), 0);
-                        if (sendlen != sizeof(header))
-                        {
-                            std::cout << "can't send header" << std::endl;
-                            return EXIT_FAILURE;
-                        }
-                        dst_path.erase(i);
-                        FD_CLR(read_set.fd_array[i], &read_set);
-                        std::cout << "--------------------------finish----------------------------" << std::endl;
-                        closesocket(cpy_read_set.fd_array[i]);
-                        continue;
-                    }
-                }
+        if (FD_ISSET(server_socket, &cpy_read_set))
+        {      
+            SOCKADDR_IN client_addr;
+            int sockaddr_size = sizeof(SOCKADDR_IN);
+            SOCKET client_socket = accept(server_socket, (SOCKADDR*)&client_addr, &sockaddr_size);
+            if (client_socket == -1)
+            {
+                std::cout << "can't accept client_socket : " << std::endl;
+                continue;
             }
+            //thread로 만들어야함
+            
+            cpy_dir_threads.push_back(std::thread(CopyDirectoryThread, client_socket));
+            //CopyDirectoryThread(client_socket);
         }
     }
+    //std::vector<std::thread> cpy_dir_threads;
+    for (size_t i = 0; i < cpy_dir_threads.size(); i++)
+        cpy_dir_threads[i].join();
 
     closesocket(server_socket);
 
