@@ -8,6 +8,11 @@
 #include <stdio.h>
 #include <map>
 #include <thread>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
+#include <cstring>
 #else
 #include <sys/socket.h>
 
@@ -19,6 +24,9 @@
 #define PACKET_SIZE 1400
 #define LISTEN_BACKLOG 50
 #define COUNT 1
+#define ACCEPT_THREADS_SIZE 1
+#define CPY_DIR_THREADS_SIZE 1
+
 
 struct FileInfomation
 {
@@ -62,13 +70,28 @@ namespace
 {
     bool RecvFileData(const std::string& dst_path, SOCKET& socket, Header& header)
     {
+        std::mutex m;
+        m.lock();
         errno_t write_fp_err;
         FILE* dst_fp = NULL;
         write_fp_err = fopen_s(&dst_fp, dst_path.c_str(), "wb");
         if (write_fp_err != 0)
         {
             std::cout << "can't create write_filepointer" << write_fp_err << std::endl;
-            return false;
+            if (write_fp_err == 13)
+            {
+                std::string error_msg = "wrong file or using file";
+                header.type = 1;
+                strncpy_s(header.file_path, error_msg.c_str()
+                    , (sizeof(header.file_path) < sizeof(error_msg)) ?
+                    sizeof(header.file_path) - 1 : sizeof(error_msg));
+
+                int sendlen = send(socket, (char*)&header, sizeof(header), 0);
+                if (sendlen != sizeof(header))
+                {
+                    return false;
+                }
+            }           
         }
 
         const __int64 FILE_SIZE = header.length;
@@ -120,6 +143,7 @@ namespace
         }
 
         fclose(dst_fp);
+        m.unlock();
         return true;
     }
 
@@ -146,7 +170,6 @@ namespace
                 return false;
             }
         }
-
         return true;
     }
 
@@ -162,99 +185,170 @@ namespace
         return false;
     }
 
-    void CopyDirectoryThread(SOCKET socket)
+    void CopyDirectoryThread(std::queue<SOCKET>* sockets, std::mutex* m, std::condition_variable* cv)
     {
-        FD_SET read_set;
-        FD_SET cpy_read_set;
-        TIMEVAL time;
-        FD_ZERO(&read_set);
-        FD_ZERO(&cpy_read_set);
-        FD_SET(socket, &read_set);
-        Header header;
-        std::string dst_path;
-
         while (true) 
         {
-            cpy_read_set = read_set;
-            time.tv_sec = 1;
-            time.tv_usec = 0;
-            
-            int req_count = select(socket + 1, &cpy_read_set, NULL, NULL, &time);
+            std::unique_lock<std::mutex> lock(*m);
+            cv->wait(lock, [&] {return !sockets->empty(); });
 
-            if (req_count == -1)
+            SOCKET socket = sockets->front();
+            sockets->pop();
+
+            lock.unlock();
+
+            FD_SET read_set;
+            FD_SET cpy_read_set;
+            TIMEVAL time;
+            FD_ZERO(&read_set);
+            FD_ZERO(&cpy_read_set);
+            FD_SET(socket, &read_set);
+            Header header;
+            std::string dst_path;
+
+            while (true)
             {
-                std::cout << "req_count error : " << errno << std::endl;
-                continue;
-            }
+                std::cout << "Copy Directory Thread Num : " << std::this_thread::get_id() << std::endl;
+                cpy_read_set = read_set;
+                time.tv_sec = 1;
+                time.tv_usec = 0;
 
-            if (req_count == 0)
-                continue;
+                int req_count = select(socket + 1, &cpy_read_set, NULL, NULL, &time);
 
-            if (FD_ISSET(socket, &cpy_read_set))
-            {
-                //recv struct
-                int recvlen = recv(socket, (char*)&header, sizeof(header), 0);
-                if (recvlen != sizeof(header))
+                if (req_count == -1)
                 {
-                    std::cout << "can't recv file_data" << std::endl;
-                    FD_CLR(socket, &read_set);
-                    std::cout << "--------------------------finish----------------------------" << std::endl;
-                    closesocket(socket);
-                    break;
+                    std::cout << "req_count error : " << errno << std::endl;
+                    continue;
                 }
 
-                if (header.type == 1)
-                {
-                    if (IsExistDirectory(header.file_path))
-                    {
-                        header.is_dir = true;
-                        header.type = 2;
-                    }
-                    else
-                    {
-                        std::cout << "can't check Directory" << std::endl;
-                        header.is_dir = false;
-                        header.type = 0;
-                        break;
-                    }
+                if (req_count == 0)
+                    continue;
 
-                    dst_path = header.file_path;
-                    std::cout << "dst_path : " << dst_path << std::endl;
-
-                    int sendlen = send(socket, (char*)&header, sizeof(header), 0);
-                    if (sendlen != sizeof(header))
-                    {
-                        std::cout << "can't send header" << std::endl;
-                        break;
-                    }
-                }
-                else if (header.type == 2)
+                if (FD_ISSET(socket, &cpy_read_set))
                 {
-                    if (DirectoryCopy(dst_path, socket, header) == false)
+                    //recv struct
+                    int recvlen = recv(socket, (char*)&header, sizeof(header), 0);
+                    if (recvlen != sizeof(header))
                     {
-                        std::cout << "fail to copy directory" << std::endl;
+                        std::cout << "can't recv file_data" << std::endl;
                         FD_CLR(socket, &read_set);
                         std::cout << "--------------------------finish----------------------------" << std::endl;
                         closesocket(socket);
                         break;
                     }
 
-                    std::cout << "end file copy" << std::endl;
-                }
-                else if (header.type == 3)
-                {
-                    int sendlen = send(socket, (char*)&header, sizeof(header), 0);
-                    if (sendlen != sizeof(header))
+                    if (header.type == 1)
                     {
-                        std::cout << "can't send header" << std::endl;
+                        if (IsExistDirectory(header.file_path))
+                        {
+                            header.is_dir = true;
+                            header.type = 2;
+                        }
+                        else
+                        {
+                            std::cout << "can't check Directory" << std::endl;
+                            header.is_dir = false;
+                            header.type = 0;
+                            break;
+                        }
+
+                        dst_path = header.file_path;
+                        std::cout << "dst_path : " << dst_path << std::endl;
+
+                        int sendlen = send(socket, (char*)&header, sizeof(header), 0);
+                        if (sendlen != sizeof(header))
+                        {
+                            std::cout << "can't send header" << std::endl;
+                            break;
+                        }
+                    }
+                    else if (header.type == 2)
+                    {
+                        if (DirectoryCopy(dst_path, socket, header) == false)
+                        {
+                            std::cout << "fail to copy directory" << std::endl;
+                            FD_CLR(socket, &read_set);
+                            std::cout << "--------------------------finish----------------------------" << std::endl;
+
+                            header.type = 1;
+                            int sendlen = send(socket, (char*)&header, sizeof(header), 0);
+                            if (sendlen != sizeof(header))
+                            {
+                                std::cout << "can't send header" << std::endl;
+                                break;
+                            }
+
+                            closesocket(socket);
+                            break;
+                        }
+                        std::cout << "end file copy" << std::endl;
+                    }
+                    else if (header.type == 3)
+                    {
+                        int sendlen = send(socket, (char*)&header, sizeof(header), 0);
+                        if (sendlen != sizeof(header))
+                        {
+                            std::cout << "can't send header" << std::endl;
+                            break;
+                        }
+
+                        FD_CLR(socket, &cpy_read_set);
+                        std::cout << std::this_thread::get_id() << "--------------------------finish----------------------------" << std::endl;
+                        closesocket(socket);
                         break;
                     }
-
-                    FD_CLR(socket, &read_set);
-                    std::cout << std::this_thread::get_id() << "--------------------------finish----------------------------" << std::endl;
-                    closesocket(socket);
-                    break;
                 }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        }
+        
+    }
+
+    void AcceptThread(SOCKET server_socket, std::queue<SOCKET>* sockets, std::mutex* m, std::condition_variable* cv)
+    {
+        FD_SET read_set;
+        FD_SET cpy_read_set;
+        TIMEVAL time;
+        FD_ZERO(&read_set);
+        FD_ZERO(&cpy_read_set);
+        FD_SET(server_socket, &read_set);
+
+        while (!_kbhit())
+        {
+            std::cout << "Accept Thread Num : "<< std::this_thread::get_id() << std::endl;
+            cpy_read_set = read_set;
+            time.tv_sec = 1;
+            time.tv_usec = 0;
+            int req_count = select(server_socket + 1, &cpy_read_set, NULL, NULL, &time);
+
+            if (req_count == -1)
+            {
+                std::cout << "req_count error : " << errno << strerror(errno) << std::endl;
+                continue;
+            }
+
+            if (req_count == 0)
+                continue;
+
+            Header header;
+
+            if (FD_ISSET(server_socket, &cpy_read_set))
+            {
+                SOCKADDR_IN client_addr;
+                int sockaddr_size = sizeof(SOCKADDR_IN);
+                SOCKET client_socket = accept(server_socket, (SOCKADDR*)&client_addr, &sockaddr_size);
+                if (client_socket == -1)
+                {
+                    std::cout << "can't accept client_socket : " << std::endl;
+                    continue;
+                }
+                //thread로 만들어야함
+
+                m->lock();
+                sockets->push(client_socket);
+                m->unlock();
+
+                cv->notify_one();
             }
         }
     }
@@ -293,50 +387,24 @@ int main()
         return false;
     }
 
-    FD_SET read_set;
-    FD_SET cpy_read_set;
-    TIMEVAL time;
-    FD_ZERO(&read_set);
-    FD_ZERO(&cpy_read_set);
-    FD_SET(server_socket, &read_set);
+    std::queue<SOCKET> sockets;
+    std::mutex m;
+    std::condition_variable cv;
 
     std::vector<std::thread> cpy_dir_threads;
-    while (!_kbhit())
-    {
-        std::cout << "asdfSasdfadf" << std::endl;
-        cpy_read_set = read_set;
-        time.tv_sec = 1;
-        time.tv_usec = 0;
-        int req_count = select(server_socket + 1, &cpy_read_set, NULL, NULL, &time);
+    std::vector<std::thread> accept_threads;
 
-         if (req_count == -1)
-         {
-             std::cout << "req_count error : " << errno << strerror(errno) << std::endl;
-             continue;
-         }
+    for(int i=0; i < ACCEPT_THREADS_SIZE; i++)
+        accept_threads.push_back(std::thread(AcceptThread, server_socket, &sockets, &m, &cv));
 
-        if (req_count == 0)
-            continue;
+    for(int i=0; i < CPY_DIR_THREADS_SIZE; i++)
+        cpy_dir_threads.push_back(std::thread(CopyDirectoryThread, &sockets, &m, &cv));
 
-        Header header;
-            
-        if (FD_ISSET(server_socket, &cpy_read_set))
-        {      
-            SOCKADDR_IN client_addr;
-            int sockaddr_size = sizeof(SOCKADDR_IN);
-            SOCKET client_socket = accept(server_socket, (SOCKADDR*)&client_addr, &sockaddr_size);
-            if (client_socket == -1)
-            {
-                std::cout << "can't accept client_socket : " << std::endl;
-                continue;
-            }
-            //thread로 만들어야함
-            
-            cpy_dir_threads.push_back(std::thread(CopyDirectoryThread, client_socket));
-            //CopyDirectoryThread(client_socket);
-        }
-    }
-    //std::vector<std::thread> cpy_dir_threads;
+    for (size_t i = 0; i < accept_threads.size(); i++)
+        accept_threads[i].join();
+
+    cv.notify_all();
+
     for (size_t i = 0; i < cpy_dir_threads.size(); i++)
         cpy_dir_threads[i].join();
 
