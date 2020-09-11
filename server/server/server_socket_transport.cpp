@@ -6,13 +6,10 @@
 #include <conio.h>
 #include <cassert>
 #include <stdio.h>
-#include <map>
 #include <thread>
 #include <queue>
 #include <mutex>
 #include <condition_variable>
-#include <chrono>
-#include <cstring>
 #else
 #include <sys/socket.h>
 
@@ -25,40 +22,26 @@
 #define LISTEN_BACKLOG 50
 #define COUNT 1
 #define ACCEPT_THREADS_SIZE 1
-#define CPY_DIR_THREADS_SIZE 1
-
-
-struct FileInfomation
-{
-    FileInfomation()
-        : file_size(0)
-        , is_directory(false)
-    {
-        memset(file_path, 0, sizeof(file_path));
-    }
-
-    char file_path[256];
-    __int64 file_size;
-    bool is_directory;
-};
+#define CPY_DIR_THREADS_SIZE 2
 
 struct Header
 {
     enum class TYPE
     {
-        PATH = 1,
-        FILE_INFO,
+        CONNECT,
+        CHECK_DIR,
         FILE_SEND,
+        ERROR_SIG
     };
     Header()
-        : type(0)
+        : type(Header::TYPE::CONNECT)
         , length(0)
         , is_dir(false)
     {
         memset(file_path, 0, sizeof(file_path));
     }
 
-    int type;
+    TYPE type;
     __int64 length;
     bool is_dir;
     char file_path[256];
@@ -70,8 +53,6 @@ namespace
 {
     bool RecvFileData(const std::string& dst_path, SOCKET& socket, Header& header)
     {
-        std::mutex m;
-        m.lock();
         errno_t write_fp_err;
         FILE* dst_fp = NULL;
         write_fp_err = fopen_s(&dst_fp, dst_path.c_str(), "wb");
@@ -81,7 +62,7 @@ namespace
             if (write_fp_err == 13)
             {
                 std::string error_msg = "wrong file or using file";
-                header.type = 1;
+                header.type = Header::TYPE::ERROR_SIG;
                 strncpy_s(header.file_path, error_msg.c_str()
                     , (sizeof(header.file_path) < sizeof(error_msg)) ?
                     sizeof(header.file_path) - 1 : sizeof(error_msg));
@@ -89,6 +70,7 @@ namespace
                 int sendlen = send(socket, (char*)&header, sizeof(header), 0);
                 if (sendlen != sizeof(header))
                 {
+                    std::cout << "can't send header" << std::endl;
                     return false;
                 }
             }           
@@ -143,7 +125,6 @@ namespace
         }
 
         fclose(dst_fp);
-        m.unlock();
         return true;
     }
 
@@ -184,13 +165,19 @@ namespace
         std::cout << "not exists Directory" << std::endl;
         return false;
     }
-
+    
+    bool end_signal = false;
     void CopyDirectoryThread(std::queue<SOCKET>* sockets, std::mutex* m, std::condition_variable* cv)
     {
-        while (true) 
+        std::cout << "make copy directory thread" << std::endl;
+        while (true)
         {
+            std::cout << "Copy Directory Thread Num : " << std::this_thread::get_id() << std::endl;
             std::unique_lock<std::mutex> lock(*m);
-            cv->wait(lock, [&] {return !sockets->empty(); });
+            cv->wait(lock, [&] { return end_signal || !sockets->empty(); });
+            //!sockets->empty()
+            if (end_signal)
+                break;
 
             SOCKET socket = sockets->front();
             sockets->pop();
@@ -203,7 +190,6 @@ namespace
             FD_ZERO(&read_set);
             FD_ZERO(&cpy_read_set);
             FD_SET(socket, &read_set);
-            Header header;
             std::string dst_path;
 
             while (true)
@@ -226,7 +212,7 @@ namespace
 
                 if (FD_ISSET(socket, &cpy_read_set))
                 {
-                    //recv struct
+                    Header header;
                     int recvlen = recv(socket, (char*)&header, sizeof(header), 0);
                     if (recvlen != sizeof(header))
                     {
@@ -237,18 +223,18 @@ namespace
                         break;
                     }
 
-                    if (header.type == 1)
+                    if (header.type == Header::TYPE::CONNECT)
                     {
                         if (IsExistDirectory(header.file_path))
                         {
                             header.is_dir = true;
-                            header.type = 2;
+                            header.type = Header::TYPE::CHECK_DIR;
                         }
                         else
                         {
                             std::cout << "can't check Directory" << std::endl;
                             header.is_dir = false;
-                            header.type = 0;
+                            header.type = Header::TYPE::ERROR_SIG;
                             break;
                         }
 
@@ -262,7 +248,7 @@ namespace
                             break;
                         }
                     }
-                    else if (header.type == 2)
+                    else if (header.type == Header::TYPE::CHECK_DIR)
                     {
                         if (DirectoryCopy(dst_path, socket, header) == false)
                         {
@@ -270,7 +256,7 @@ namespace
                             FD_CLR(socket, &read_set);
                             std::cout << "--------------------------finish----------------------------" << std::endl;
 
-                            header.type = 1;
+                            header.type = Header::TYPE::ERROR_SIG;
                             int sendlen = send(socket, (char*)&header, sizeof(header), 0);
                             if (sendlen != sizeof(header))
                             {
@@ -283,7 +269,7 @@ namespace
                         }
                         std::cout << "end file copy" << std::endl;
                     }
-                    else if (header.type == 3)
+                    else if (header.type == Header::TYPE::FILE_SEND)
                     {
                         int sendlen = send(socket, (char*)&header, sizeof(header), 0);
                         if (sendlen != sizeof(header))
@@ -300,8 +286,8 @@ namespace
                 }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(80));
-        }
-        
+        }  
+        std::cout << "end copy directory thread" << std::endl;
     }
 
     void AcceptThread(SOCKET server_socket, std::queue<SOCKET>* sockets, std::mutex* m, std::condition_variable* cv)
@@ -323,7 +309,7 @@ namespace
 
             if (req_count == -1)
             {
-                std::cout << "req_count error : " << errno << strerror(errno) << std::endl;
+                std::cout << "req_count error : " << errno << std::endl;
                 continue;
             }
 
@@ -351,6 +337,8 @@ namespace
                 cv->notify_one();
             }
         }
+
+        std::cout << "end access thread" << std::endl;
     }
 }
 
@@ -399,14 +387,18 @@ int main()
 
     for(int i=0; i < CPY_DIR_THREADS_SIZE; i++)
         cpy_dir_threads.push_back(std::thread(CopyDirectoryThread, &sockets, &m, &cv));
-
-    for (size_t i = 0; i < accept_threads.size(); i++)
+    
+    for (size_t i = 0; i < accept_threads.size(); i++) 
         accept_threads[i].join();
-
+        
+    end_signal = true;
     cv.notify_all();
 
     for (size_t i = 0; i < cpy_dir_threads.size(); i++)
         cpy_dir_threads[i].join();
+
+    cpy_dir_threads.clear();
+    accept_threads.clear();
 
     closesocket(server_socket);
 

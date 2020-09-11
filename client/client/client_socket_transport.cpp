@@ -30,38 +30,24 @@
 #define SERVER_IP "127.0.0.1"
 #define COUNT 1
 
-struct FileInfomation
-{
-    FileInfomation()
-        : file_size (0)
-        , is_directory(false)
-    {
-        memset(file_path, 0, sizeof(file_path));
-    }
-
-    FileInfomation(const char* file_name, int file_size, bool is_dir)
-        : file_size(file_size)
-        , is_directory(is_dir)
-    {
-        memset(file_path, 0, sizeof(file_path));
-        memcpy(file_path, file_name, sizeof(file_name));
-    }
-
-    char file_path[256];
-    __int64 file_size;
-    bool is_directory;
-};
 struct Header
 {
+    enum class TYPE
+    {
+        CONNECT,
+        CHECK_DIR,
+        FILE_SEND,
+        ERROR_SIG
+    };
     Header()
-        : type(0)
+        : type(Header::TYPE::CONNECT)
         , length(0)
         , is_dir(false)
     {
         memset(file_path, 0, sizeof(file_path));
     }
 
-    int type;
+    TYPE type;
     __int64 length;
     bool is_dir;
     char file_path[256];
@@ -318,7 +304,7 @@ namespace
     std::string InputPath()
     {
         char user_input_path[PACKET_SIZE];
-        std::cin.getline(user_input_path,7777,'\n');
+        std::cin.getline(user_input_path,'\n');
         std::cout << "input " << user_input_path  << std::endl;
         return user_input_path;
     }
@@ -326,35 +312,34 @@ namespace
 
 int main()
 {
+    WSADATA wsa_data;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa_data) == -1)
+    {
+        std::cout << "WSAStartup errno : " << errno << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    SOCKET client_socket;
+    client_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (client_socket == -1)
+    {
+        std::cout << "socket errno : " << errno << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    SOCKADDR_IN client_addr;
+    client_addr.sin_family = AF_INET;
+    client_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
+    client_addr.sin_port = htons(PORT);
+
+    if (connect(client_socket, (SOCKADDR*)&client_addr, sizeof(client_addr)) == -1)
+    {
+        std::cout << "connect errno : " << errno << std::endl;
+        return EXIT_FAILURE;
+    }
+
     while (true) {
-
-        WSADATA wsa_data;
-        if (WSAStartup(MAKEWORD(2, 2), &wsa_data) == -1)
-        {
-            std::cout << "WSAStartup errno : " << errno << std::endl;
-            return EXIT_FAILURE;
-        }
-
-        SOCKET client_socket;
-        client_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (client_socket == -1)
-        {
-            std::cout << "socket errno : " << errno << std::endl;
-            return EXIT_FAILURE;
-        }
-
-        SOCKADDR_IN client_addr;
-        client_addr.sin_family = AF_INET;
-        client_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
-        client_addr.sin_port = htons(PORT);
-
-        if (connect(client_socket, (SOCKADDR*)&client_addr, sizeof(client_addr)) == -1)
-        {
-            std::cout << "connect errno : " << errno << std::endl;
-            return EXIT_FAILURE;
-        }
         Header header;
-        header.type = 1;
         FD_SET read_set;
         FD_SET cpy_read_set;
         TIMEVAL time;
@@ -362,8 +347,14 @@ int main()
         FD_ZERO(&read_set);
         FD_ZERO(&cpy_read_set);
         FD_SET(client_socket, &read_set);
-        char src_path[PACKET_SIZE] = "C:/Users/mnt/Desktop/dd";
-        char dst_path[PACKET_SIZE] = "C:/Users/mnt/Desktop/empty_directory";
+        //char src_path[PACKET_SIZE] = "C:/Users/mnt/Desktop/dd";
+        //char dst_path[PACKET_SIZE] = "C:/Users/mnt/Desktop/empty_directory";
+
+        char src_path[PACKET_SIZE] = "C:/Users/mnt/Desktop/a";
+        char dst_path[PACKET_SIZE] = "C:/Users/mnt/Desktop/b";
+
+        //char src_path[PACKET_SIZE] = "C:/Users/mnt/Desktop/copy";
+        //char dst_path[PACKET_SIZE] = "C:/Users/mnt/Desktop/copy qwer";
 
         bool input_check = true;
         while (input_check)
@@ -406,11 +397,10 @@ int main()
             if (sendlen != sizeof(header))
             {
                 std::cout << "can't send header" << std::endl;
-                continue;
+                break;
             }
             input_check = false;
         }
-
 
         while (!_kbhit())
         {
@@ -429,49 +419,53 @@ int main()
             if (req_count == 0)
                 continue;
 
-
             if (FD_ISSET(client_socket, &cpy_read_set))
             {
                 int recvlen = recv(client_socket, (char*)&header, sizeof(header), 0);
                 if (recvlen != sizeof(header))
                 {
                     std::cout << "can't recv header" << std::endl;
-                    return EXIT_FAILURE;
+                    break;
                 }
 
-                if (header.type == 1)
+                if (header.type == Header::TYPE::ERROR_SIG)
                 {
                     std::cout << header.file_path << std::endl;
-                    return EXIT_FAILURE;
+                    break;
                 }
-                else if (header.type == 2)
+                else if (header.type == Header::TYPE::CHECK_DIR)
                 {
                     if (DirectoryCopy(src_path, dst_path, client_socket, header) == false)
                     {
                         std::cout << "fail to copy directory" << std::endl;
-                        return EXIT_FAILURE;
+                        break;
                     }
 
-                    header.type = 3;
+                    char yes_or_no;
+                    std::cout << "do you want copy more?(y/n) : ";
+                    std::cin >> yes_or_no;
+                    if (yes_or_no == 'y')
+                        break;
+
+                    header.type = Header::TYPE::FILE_SEND;
                     int sendlen = send(client_socket, (char*)&header, sizeof(header), 0);
                     if (sendlen != sizeof(header))
                     {
                         std::cout << "can't send header" << std::endl;
-                        return EXIT_FAILURE;
+                        break;
                     }
                 }
-                else if (header.type == 3)
+                else if (header.type == Header::TYPE::FILE_SEND)
                 {
                     closesocket(client_socket);
                     WSACleanup();
                     FD_CLR(client_socket, &read_set);
-                    //return 0;
-                    break;
+                    return 1;
                 }
             }
         }
     }
-    
+    return 0;
 }
 
 
