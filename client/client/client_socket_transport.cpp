@@ -213,33 +213,33 @@ int main()
         bool input_check = true;
         while (input_check)
         {
-            std::cout << "src_path input : ";
-            std::string input_path = InputPath();
-            strncpy_s(src_path, input_path.c_str()
-                , (sizeof(src_path) < input_path.length()) ?
-                sizeof(src_path) - 1 : input_path.length());
+            //std::cout << "src_path input : ";
+            //std::string input_path = InputPath();
+            //strncpy_s(src_path, input_path.c_str()
+            //    , (sizeof(src_path) < input_path.length()) ?
+            //    sizeof(src_path) - 1 : input_path.length());
 
-            std::cout << std::endl;
+            //std::cout << std::endl;
 
-            std::cout << "dst_path input : ";
-            input_path.clear();
-            input_path = InputPath();
-            strncpy_s(dst_path, input_path.c_str()
-                , (sizeof(dst_path) < input_path.length()) ?
-                sizeof(dst_path) - 1 : input_path.length());
+            //std::cout << "dst_path input : ";
+            //input_path.clear();
+            //input_path = InputPath();
+            //strncpy_s(dst_path, input_path.c_str()
+            //    , (sizeof(dst_path) < input_path.length()) ?
+            //    sizeof(dst_path) - 1 : input_path.length());
 
-            std::cout << std::endl;
-            if (!strcmp(src_path, dst_path))
-            {
-                std::cout << "same src_path and dst_path" << std::endl;
-                continue;
-            }
+            //std::cout << std::endl;
+            //if (!strcmp(src_path, dst_path))
+            //{
+            //    std::cout << "same src_path and dst_path" << std::endl;
+            //    continue;
+            //}
 
-            if (IsExistDirectory(src_path) == false)
-            {
-                std::cout << "invalid src_path" << std::endl;
-                continue;
-            }
+            //if (IsExistDirectory(src_path) == false)
+            //{
+            //    std::cout << "invalid src_path" << std::endl;
+            //    continue;
+            //}
 
             strncpy_s(header.file_path, dst_path
                 , (sizeof(header.file_path) < sizeof(dst_path)) ?
