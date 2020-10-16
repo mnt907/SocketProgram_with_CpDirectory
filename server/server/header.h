@@ -64,4 +64,92 @@ struct Header
 	{
 		memset(file_path, 0, sizeof(file_path));
 	}
+
+};
+
+
+class ClientStatusManage
+{
+public:
+    struct SocketInfo
+    {
+        int socket;
+        Header header;
+
+        SocketInfo()
+            : socket(0)
+        {
+        }
+
+        SocketInfo(int socket, Header header)
+            : socket(socket)
+            , header(header)
+        {
+        }
+
+    };
+
+private:
+    std::queue<SocketInfo> client_status;
+    std::mutex m;
+
+public:
+    void Push(int socket, Header header)
+    {
+        m.lock();
+        client_status.push(SocketInfo(socket, header));
+        m.unlock();
+    }
+
+    SocketInfo Pop()
+    {
+        m.lock();
+        if (client_status.empty())
+            std::cout << "dkjflakjf" << std::endl;
+
+        SocketInfo socket_info = client_status.front();
+        client_status.pop();
+        m.unlock();
+        return socket_info;
+    }
+
+    bool Empty()
+    {
+        if (client_status.empty())
+            return true;
+        else
+            return false;
+    }
+};
+
+class ClientSocketManage
+{
+private:
+    std::queue<int> client_sockets;
+    std::mutex m;
+
+public:
+    void Push(int socket)
+    {
+        m.lock();
+        client_sockets.push(socket);
+        m.unlock();
+    }
+
+    int Pop()
+    {
+        m.lock();
+        int client_socket = client_sockets.front();
+        client_sockets.pop();
+        m.unlock();
+        return client_socket;
+    }
+
+    bool Empty()
+    {
+        if (client_sockets.empty())
+            return true;
+        else
+            return false;
+    }
 };

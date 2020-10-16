@@ -179,26 +179,24 @@ namespace
     }
 
     bool end_signal = false;
-    void CopyDirectoryThread(std::queue<int>* client_sockets, std::queue<int>* seq_recv_sockets,
-        std::map<int, Header>* client_status, std::mutex* m, std::condition_variable* cpy_cv, std::condition_variable* recv_cv)
+    void CopyDirectoryThread(ClientSocketManage* client_sockets, ClientStatusManage* client_status
+        , std::condition_variable* cpy_cv, std::condition_variable* recv_cv)
     {
         std::cout << "make copy directory thread" << std::endl;
         while (end_signal == false)
         {
             std::cout << "Copy Directory Thread Num : " << std::this_thread::get_id() << std::endl;
-            std::unique_lock<std::mutex> lock(*m);
-            cpy_cv->wait(lock, [&] { return end_signal || !client_status->empty(); });
+            std::mutex m;
+            std::unique_lock<std::mutex> lock(m);
+            cpy_cv->wait(lock, [&] { return end_signal || !client_status->Empty(); });
 
             if (end_signal)
                 break;
 
-            const int socket = seq_recv_sockets->front();
-            seq_recv_sockets->pop();
-            std::map<int, Header>::const_iterator iter;
-            iter = client_status->find(socket);
-            Header header = iter->second;
-            client_status->erase(iter);
-            lock.unlock();
+            ClientStatusManage::SocketInfo socket_info = client_status->Pop();
+
+            const int socket = socket_info.socket;
+            Header header = socket_info.header;
 
             if (header.type == Header::TYPE::CONNECT)
             {
@@ -213,7 +211,7 @@ namespace
                     header.is_dir = false;
                     header.type = Header::TYPE::NOT_EXIST_DIR;
                 }
-                
+
                 std::cout << "dst_path : " << header.file_path << std::endl;
 
 #ifdef _WIN32
@@ -260,9 +258,7 @@ namespace
                 std::cout << "end file copy" << std::endl;
             }
 
-            m->lock();
-            client_sockets->push(socket);
-            m->unlock();
+            client_sockets->Push(socket);
 
             recv_cv->notify_one();
             std::this_thread::sleep_for(std::chrono::milliseconds(80));
@@ -270,8 +266,8 @@ namespace
         std::cout << "end copy directory thread" << std::endl;
     }
 
-    void RecvHeaderThread(std::queue<int>* client_sockets, std::queue<int>* seq_recv_sockets,
-        std::map<int, Header>* client_status, std::mutex* m, std::condition_variable* cpy_cv, std::condition_variable* recv_cv)
+    void RecvHeaderThread(ClientSocketManage* client_sockets, ClientStatusManage* client_status
+        , std::condition_variable* cpy_cv, std::condition_variable* recv_cv)
     {
         std::cout << "make recv header thread" << std::endl;
         fd_set read_set;
@@ -283,9 +279,10 @@ namespace
         while (true)
         {
             std::cout << "Recv Header Thread Num : " << std::this_thread::get_id() << std::endl;
-            std::unique_lock<std::mutex> lock(*m);
-            recv_cv->wait(lock, [&] { return end_signal || !client_sockets->empty(); });
-
+            std::mutex m;
+            std::unique_lock<std::mutex> lock(m);
+            recv_cv->wait(lock, [&] { return end_signal || !client_sockets->Empty(); });
+            
             lock.unlock();
             if (end_signal)
                 break;
@@ -295,19 +292,15 @@ namespace
 
             while (end_signal == false)
             {
-                m->lock();
-                if (client_sockets->empty() == false)
+                if (!client_sockets->Empty())
                 {
-                    int socket = client_sockets->front();
-                    FD_SET(socket, &read_set);
-                    client_sockets->pop();
-
+                    FD_SET(client_sockets->Pop(), &read_set);
 #ifndef _WIN32
                     if (fd_max < socket)
                         fd_max = socket;
 #endif // !_WIN32
                 }
-                m->unlock();
+
                 cpy_read_set = read_set;
                 time.tv_sec = 1;
                 time.tv_usec = 0;
@@ -368,11 +361,7 @@ namespace
 
                         strncpy_s(header.file_path, sizeof(header.file_path), converted_dst_path.c_str(), converted_dst_path.length());
 #endif //_WIN32
-
-                        m->lock();
-                        client_status->insert(std::pair<int, Header>(socket, header));
-                        seq_recv_sockets->push(socket);
-                        m->unlock();
+                        client_status->Push(socket, header);  
 
                         FD_CLR(socket, &read_set);
                         cpy_cv->notify_one();
@@ -389,7 +378,7 @@ namespace
         end_signal = true;
     }
 
-    void AcceptThread(const int& server_socket, std::queue<int>* client_sockets, std::mutex* m, std::condition_variable* recv_cv)
+    void AcceptThread(const int& server_socket, ClientSocketManage* client_sockets, std::condition_variable* recv_cv)
     {
         std::signal(SIGINT, SignalHandler);
 
@@ -406,12 +395,12 @@ namespace
             cpy_read_set = read_set;
             time.tv_sec = 1;
             time.tv_usec = 0;
-            
+
             int req_count = select(server_socket + 1, &cpy_read_set, NULL, NULL, &time);
 
             if (req_count == -1)
-            {  
-                if(errno == 0)
+            {
+                if (errno == 0)
                     continue;
                 else
                 {
@@ -433,9 +422,8 @@ namespace
                     std::cout << "can't accept client_socket : " << std::endl;
                     continue;
                 }
-                m->lock();
-                client_sockets->push(client_socket);
-                m->unlock();
+
+                client_sockets->Push(client_socket);
 
                 recv_cv->notify_one();
             }
@@ -449,7 +437,7 @@ namespace
         if (server_socket == -1)
         {
             std::cout << "socket errno : " << errno << std::endl;
-            return -1;
+            return server_socket;
         }
         sockaddr_in server_addr;
         server_addr.sin_family = AF_INET;
@@ -499,22 +487,20 @@ int main()
         else
             break;
     }
+    ClientSocketManage client_sockets;
+    ClientStatusManage client_status;
 
-    std::mutex m;
-    std::queue<int> client_sockets;
     std::condition_variable recv_cv;
-    std::thread accept_thread(AcceptThread, server_socket, &client_sockets, &m, &recv_cv);
+    std::thread accept_thread(AcceptThread, server_socket, &client_sockets, &recv_cv);
 
-    std::map<int, Header> client_status;
-    std::queue<int> seq_recv_sockets;
     std::vector<std::thread> recv_header_threads;
     std::condition_variable cpy_cv;
     for (int i = 0; i < NUM_OF_RECV_HEADER_THREAD; ++i)
-        recv_header_threads.push_back(std::thread(RecvHeaderThread, &client_sockets, &seq_recv_sockets, &client_status, &m, &cpy_cv, &recv_cv));
+        recv_header_threads.push_back(std::thread(RecvHeaderThread, &client_sockets, &client_status, &cpy_cv, &recv_cv));
 
     std::vector<std::thread> cpy_dir_threads;
     for (int i = 0; i < CPY_DIR_THREADS_SIZE; ++i)
-        cpy_dir_threads.push_back(std::thread(CopyDirectoryThread, &client_sockets, &seq_recv_sockets, &client_status, &m, &cpy_cv, &recv_cv));
+        cpy_dir_threads.push_back(std::thread(CopyDirectoryThread, &client_sockets, &client_status, &cpy_cv, &recv_cv));
 
     accept_thread.join();
 
