@@ -52,7 +52,7 @@ namespace
         FILE* dst_fp = NULL;
 
 #ifdef _WIN32
-        const int write_fp_err = fopen_s(&dst_fp, header.file_path, "wb");
+        int write_fp_err = fopen_s(&dst_fp, header.file_path, "wb");
         if (write_fp_err != 0)
         {
             std::cout << "can't create write_filepointer" << write_fp_err << std::endl;
@@ -64,9 +64,9 @@ namespace
 
                 strncpy_s(error_header.file_path, sizeof(error_header.file_path), error_msg.c_str(), error_msg.length());
 #ifdef _WIN32
-                const int sendlen = send(socket, (char*)&error_header, sizeof(error_header), 0);
+                int sendlen = send(socket, (char*)&error_header, sizeof(error_header), 0);
 #else
-                const int sendlen = send(socket, (char*)&error_header, sizeof(error_header), MSG_NOSIGNAL);
+                int sendlen = send(socket, (char*)&error_header, sizeof(error_header), MSG_NOSIGNAL);
 #endif //_WIN32
                 if (sendlen == -1)
                 {
@@ -92,7 +92,7 @@ namespace
             if (sum_recv_len < recv_size)
                 recv_size = (int)sum_recv_len;
 
-            const int recvlen = recv(socket, recv_buf, recv_size, 0);
+            int recvlen = recv(socket, recv_buf, recv_size, 0);
             if (recvlen == -1)
             {
                 std::cout << "can't recv file_data" << std::endl;
@@ -100,7 +100,7 @@ namespace
                 return false;
             }
 
-            const int writelen = fwrite(recv_buf, recvlen, COUNT, dst_fp);
+            int writelen = fwrite(recv_buf, recvlen, COUNT, dst_fp);
             if (writelen < COUNT)
             {
                 std::cout << "can't write file_data" << std::endl;
@@ -124,9 +124,9 @@ namespace
         {
             std::cout << "make directory" << std::endl;
 #ifdef _WIN32
-            const int result = _mkdir(header.file_path);
+            int result = _mkdir(header.file_path);
 #else
-            const int result = mkdir(header.file_path, 0666);
+            int result = mkdir(header.file_path, 0666);
 #endif // _WIN32
 
             if (result != 0)
@@ -217,9 +217,9 @@ namespace
                 std::cout << "dst_path : " << header.file_path << std::endl;
 
 #ifdef _WIN32
-                const int sendlen = send(socket, (char*)&header, sizeof(header), 0);
+                int sendlen = send(socket, (char*)&header, sizeof(header), 0);
 #else 
-                const int sendlen = send(socket, (char*)&header, sizeof(header), MSG_NOSIGNAL);
+                int sendlen = send(socket, (char*)&header, sizeof(header), MSG_NOSIGNAL);
 #endif //_WIN32
                 if (sendlen == -1)
                 {
@@ -241,9 +241,9 @@ namespace
 
                     header.type = Header::TYPE::ERROR_SIG;
 #ifdef _WIN32
-                    const int sendlen = send(socket, (char*)&header, sizeof(header), 0);
+                    int sendlen = send(socket, (char*)&header, sizeof(header), 0);
 #else 
-                    const int sendlen = send(socket, (char*)&header, sizeof(header), MSG_NOSIGNAL);
+                    int sendlen = send(socket, (char*)&header, sizeof(header), MSG_NOSIGNAL);
 #endif //_WIN32
                     if (sendlen == -1)
                     {
@@ -269,7 +269,6 @@ namespace
         }
         std::cout << "end copy directory thread" << std::endl;
     }
-
 
     void RecvHeaderThread(std::queue<int>* client_sockets, std::queue<int>* seq_recv_sockets,
         std::map<int, Header>* client_status, std::mutex* m, std::condition_variable* cpy_cv, std::condition_variable* recv_cv)
@@ -322,7 +321,7 @@ namespace
                 }
 #endif // _WIN32
 
-                const int req_count = select(fd_max + 1, &cpy_read_set, NULL, NULL, &time);
+                int req_count = select(fd_max + 1, &cpy_read_set, NULL, NULL, &time);
 
                 if (req_count == -1)
                 {
@@ -350,7 +349,7 @@ namespace
                     if (FD_ISSET(socket, &cpy_read_set))
                     {
                         Header header;
-                        const int recvlen = recv(socket, (char*)&header, sizeof(header), 0);
+                        int recvlen = recv(socket, (char*)&header, sizeof(header), 0);
                         if (recvlen == -1 || !strcmp(header.file_path, ""))
                         {
                             FD_CLR(socket, &read_set);
@@ -407,7 +406,7 @@ namespace
             cpy_read_set = read_set;
             time.tv_sec = 1;
             time.tv_usec = 0;
-
+            
             int req_count = select(server_socket + 1, &cpy_read_set, NULL, NULL, &time);
 
             if (req_count == -1)
@@ -428,7 +427,7 @@ namespace
             {
                 sockaddr_in client_addr;
                 socklen_t sockaddr_size = sizeof(sockaddr_in);
-                const int client_socket = accept(server_socket, (sockaddr*)&client_addr, &sockaddr_size);
+                int client_socket = accept(server_socket, (sockaddr*)&client_addr, &sockaddr_size);
                 if (client_socket == -1)
                 {
                     std::cout << "can't accept client_socket : " << std::endl;
@@ -446,11 +445,11 @@ namespace
 
     int BindListenThread()
     {
-        const int server_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        int server_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (server_socket == -1)
         {
             std::cout << "socket errno : " << errno << std::endl;
-            return false;
+            return -1;
         }
         sockaddr_in server_addr;
         server_addr.sin_family = AF_INET;
@@ -464,14 +463,15 @@ namespace
         if (bind(server_socket, (sockaddr*)&server_addr, sizeof(server_addr)) == -1)
         {
             std::cout << "bind errno : " << errno << std::endl;
-            return false;
+            return -1;
         }
 
         if (listen(server_socket, LISTEN_BACKLOG) == -1)
         {
             std::cout << "listen errno : " << errno << std::endl;
-            return false;
+            return -1;
         }
+
         return server_socket;
     }
 }
@@ -487,18 +487,11 @@ int main()
     }
 #endif // _WIN32
 
-    std::map<int, Header> client_status;
-    std::queue<int> client_sockets;
-    std::queue<int> seq_recv_sockets;
-    std::mutex m;
-    std::condition_variable recv_cv;
-    std::condition_variable cpy_cv;
-
     int server_socket = 0;
     for (int i = 0; i < 5; ++i)
     {
         server_socket = BindListenThread();
-        if (server_socket == 0)
+        if (server_socket == -1)
         {
             std::cout << "Fail to Bind or Listen" << std::endl;
             continue;
@@ -506,14 +499,20 @@ int main()
         else
             break;
     }
+
+    std::mutex m;
+    std::queue<int> client_sockets;
+    std::condition_variable recv_cv;
     std::thread accept_thread(AcceptThread, server_socket, &client_sockets, &m, &recv_cv);
 
-    std::vector<std::thread> cpy_dir_threads;
+    std::map<int, Header> client_status;
+    std::queue<int> seq_recv_sockets;
     std::vector<std::thread> recv_header_threads;
-
+    std::condition_variable cpy_cv;
     for (int i = 0; i < NUM_OF_RECV_HEADER_THREAD; ++i)
         recv_header_threads.push_back(std::thread(RecvHeaderThread, &client_sockets, &seq_recv_sockets, &client_status, &m, &cpy_cv, &recv_cv));
 
+    std::vector<std::thread> cpy_dir_threads;
     for (int i = 0; i < CPY_DIR_THREADS_SIZE; ++i)
         cpy_dir_threads.push_back(std::thread(CopyDirectoryThread, &client_sockets, &seq_recv_sockets, &client_status, &m, &cpy_cv, &recv_cv));
 

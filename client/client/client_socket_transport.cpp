@@ -43,6 +43,20 @@ namespace
         delete[] pszOut;
         return resultString;
     }
+
+    int64_t CheckFileSize(FILE* fp)
+    {
+        _fseeki64(fp, (__int64)0, SEEK_END);
+        const int64_t FILE_SIZE = _ftelli64(fp);
+        if (FILE_SIZE < 0)
+        {
+            std::cout << "can't get a file's offset" << std::endl;
+            return false;
+        }
+        rewind(fp);
+
+        return FILE_SIZE;
+    }
 #endif //_WIN32
 
 #ifdef _WIN32
@@ -73,40 +87,29 @@ namespace
     {
         FILE* src_fp = NULL;
 #ifdef _WIN32
-        const int read_fp_err = fopen_s(&src_fp, src_path.c_str(), "rb");
+        int read_fp_err = fopen_s(&src_fp, src_path.c_str(), "rb");
         if (read_fp_err != 0)
         {
             std::cout << "can't create read_filepointer" << std::endl;
             return false;
         }
 
-        _fseeki64(src_fp, (__int64)0, SEEK_END);
-        const int64_t FILE_SIZE = _ftelli64(src_fp);
-        if (FILE_SIZE < 0)
-        {
-            std::cout << "can't get a file's offset" << std::endl;
-            return false;
-        }
-        rewind(src_fp);
-        header.length = FILE_SIZE;
+        header.length = CheckFileSize(src_fp);
 #else
         src_fp = fopen64(src_path.c_str(), "rb");
 
-#endif // _WIN32
-
-
-#ifndef _WIN32	
         struct stat file_info;
-        const int stat_result = stat(src_path.c_str(), &file_info);
+        int stat_result = stat(src_path.c_str(), &file_info);
         if (stat_result != 0)
         {
             if (errno == EACCES)
                 std::cout << "can't read file info " << src_path << std::endl;
         }
         header.length = file_info.st_size;
-#endif //!_WIN32
 
-        const int sendlen = send(socket, (char*)&header, sizeof(header), 0);
+#endif // _WIN32
+
+        int sendlen = send(socket, (char*)&header, sizeof(header), 0);
         if (sendlen == -1)
         {
             std::cout << "can't send header" << std::endl;
@@ -127,14 +130,14 @@ namespace
             if (left_send_size < PACKET_SIZE)
                 send_size = (int)left_send_size;
 
-            const int readlen = fread(send_buf, send_size, COUNT, src_fp);
+            int readlen = fread(send_buf, send_size, COUNT, src_fp);
             if (readlen != COUNT)
             {
                 std::cout << "can't read file_data" << std::endl;
                 return false;
             }
 
-            const int sendlen = send(socket, send_buf, send_size, 0);
+            int sendlen = send(socket, send_buf, send_size, 0);
             if (sendlen == -1)
             {
                 std::cout << "can't send file_data" << std::endl;
@@ -188,7 +191,7 @@ namespace
                 sizeof(header.file_path) - 1 : DST_FILE_PATH.length());
 
             struct stat file_info;
-            const int result = lstat(SRC_FILE_PATH.c_str(), &file_info);
+            int result = lstat(SRC_FILE_PATH.c_str(), &file_info);
 
             if (result != 0)
             {
@@ -220,7 +223,7 @@ namespace
                     header.is_dir = true;
                     std::cout << "[directory name] " << SRC_FILE_PATH << std::endl;
 
-                    const int sendlen = send(socket, (char*)&header, sizeof(header), 0);
+                    int sendlen = send(socket, (char*)&header, sizeof(header), 0);
                     if (sendlen != sizeof(header))
                     {
                         std::cout << "can't send header" << std::endl;
@@ -252,6 +255,55 @@ namespace
         closedir(src_dirp);
 #endif // !_WIN32
         return true;
+    }
+
+    int ConnectClient(std::queue<int>* sockets, std::mutex* m)
+    {
+        int client_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (client_socket == -1)
+        {
+            std::cout << "socket errno : " << errno << std::endl;
+            return 0;
+        }
+
+        sockaddr_in client_addr;
+        client_addr.sin_family = AF_INET;
+        std::cout << "input server_ip : ";
+        //InputData().c_str() 172.18.62.41   192.168.56.101
+#ifdef _WIN32
+        inet_pton(AF_INET, "192.168.56.101", &client_addr.sin_addr.s_addr);
+#else
+        client_addr.sin_addr.s_addr = inet_addr("192.168.56.1");
+#endif // _WIN32
+        client_addr.sin_port = htons(PORT);
+
+        if (connect(client_socket, (sockaddr*)&client_addr, sizeof(client_addr)) == -1)
+        {
+            std::cout << "connect errno : " << errno << std::endl;
+            return false;
+        }
+        m->lock();
+        sockets->push(client_socket);
+        m->unlock();
+
+        return client_socket;
+    }
+
+    int AttemptConnect(std::queue<int>* sockets, std::mutex* m)
+    {
+        int connect_result = 0;
+        for (int i = 0; i < RECONNECT_COUNT; ++i)
+        {
+            connect_result = ConnectClient(sockets, m);
+            if (connect_result == 0)
+            {
+                std::cout << "can't connect socket" << std::endl;
+                continue;
+            }
+            else
+                break;
+        }
+        return connect_result;
     }
 
     std::string InputData()
@@ -298,7 +350,6 @@ namespace
         dst_path = "C:\\Users\\hunesion\\Desktop\\d";
 #endif //_WIN32
 
-
         Header header;
 #ifdef _WIN32        
         strncpy_s(header.file_path, sizeof(header.file_path), dst_path.c_str(), dst_path.length());
@@ -307,7 +358,7 @@ namespace
             , (sizeof(header.file_path) < dst_path.length()) ?
             sizeof(header.file_path) - 1 : dst_path.length());
 #endif
-        const int sendlen = send(socket, (char*)&header, sizeof(header), 0);
+        int sendlen = send(socket, (char*)&header, sizeof(header), 0);
         if (sendlen == -1)
         {
             std::cout << "can't send header" << std::endl;
@@ -316,36 +367,20 @@ namespace
         return true;
     }
 
-    int ConnectClient(std::queue<int>* sockets, std::mutex* m)
+    std::string CheckContinue(const int socket)
     {
-        const int client_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (client_socket == -1)
+        char yes_or_no;
+        std::cout << "do you want copy more?(y/n) : ";
+        std::cin >> yes_or_no;
+        if (yes_or_no == 'y')
         {
-            std::cout << "socket errno : " << errno << std::endl;
-            return 0;
+            std::string src_path = CheckSrcPath();
+            if (CheckDstPath(socket) == 0)
+                std::cout << "Fail to send dst_path" << std::endl;
+            return src_path;
         }
-
-        sockaddr_in client_addr;
-        client_addr.sin_family = AF_INET;
-        std::cout << "input server_ip : ";
-        //InputData().c_str() 172.18.62.41   192.168.56.101
-#ifdef _WIN32
-        inet_pton(AF_INET, "192.168.56.101", &client_addr.sin_addr.s_addr);
-#else
-        client_addr.sin_addr.s_addr = inet_addr("192.168.56.1");
-#endif // _WIN32
-        client_addr.sin_port = htons(PORT);
-
-        if (connect(client_socket, (sockaddr*)&client_addr, sizeof(client_addr)) == -1)
-        {
-            std::cout << "connect errno : " << errno << std::endl;
-            return false;
-        }
-        m->lock();
-        sockets->push(client_socket);
-        m->unlock();
-
-        return client_socket;
+        else
+            return "n";
     }
 
     void CopyDirectoryThread(const int& socket, std::queue<int>* sockets, std::mutex* m)
@@ -362,7 +397,6 @@ namespace
         {
             std::cout << "Fail to send dst_path" << std::endl;
         }
-            
 
         while (end_signal == false)
         {
@@ -370,15 +404,26 @@ namespace
             time.tv_sec = 1;
             time.tv_usec = 0;
 
-            const int req_count = select(socket + 1, &cpy_read_set, NULL, NULL, &time);
+            int req_count = select(socket + 1, &cpy_read_set, NULL, NULL, &time);
 
-            if (req_count == 0 || req_count == -1)
+            if (req_count == -1)
+            {
+                if (errno == 0)
+                    continue;
+                else
+                {
+                    std::cout << "req_count error : " << errno << std::endl;
+                    continue;
+                }
+            }
+
+            if (req_count == 0)
                 continue;
 
             if (FD_ISSET(socket, &cpy_read_set))
             {
                 Header header;
-                const int recvlen = recv(socket, (char*)&header, sizeof(header), 0);
+                int recvlen = recv(socket, (char*)&header, sizeof(header), 0);
                 if ((recvlen == -1 || recvlen == 0))
                 {
                     std::cout << "server_off" << std::endl;
@@ -388,20 +433,10 @@ namespace
 #else
                     close(socket);
 #endif // _WIN32
-                    for (int i = 0; i < RECONNECT_COUNT; ++i)
-                    {
-                        const int connect_result = ConnectClient(sockets, m);
-                        if (connect_result == 0)
-                        {
-                            std::cout << "can't connect socket" << std::endl;
-                            continue;
-                        }
-                        else
-                        {
-                            FD_SET(connect_result, &read_set);
-                            break;
-                        }
-                    }
+                    int connect_result = AttemptConnect(sockets, m);
+                    if (connect_result != 0)
+                        FD_SET(connect_result, &read_set);
+
                     break;
                 }
 
@@ -429,17 +464,8 @@ namespace
                         std::cout << "Fail to send dst_path" << std::endl;
                     continue;
 
-
-                    char yes_or_no;
-                    std::cout << "do you want copy more?(y/n) : ";
-                    std::cin >> yes_or_no;
-                    if (yes_or_no == 'y')
-                    {
-                        src_path = CheckSrcPath();
-                        if (CheckDstPath(socket) == 0)
-                            std::cout << "Fail to send dst_path" << std::endl;
-                    }
-                    else
+                    src_path = CheckContinue(socket);
+                    if (!src_path.compare("n"))
                     {
                         FD_CLR(socket, &read_set);
 #ifdef _WIN32
@@ -477,17 +503,8 @@ int main()
     std::queue<int> sockets;
     std::mutex m;
 
-    for (int i = 0; i < RECONNECT_COUNT; ++i)
-    {
-        const int connect_result = ConnectClient(&sockets, &m);
-        if (connect_result == 0)
-        {
-            std::cout << "can't connect socket" << std::endl;
-            continue;
-        }
-        else
-            break;
-    }
+    if (AttemptConnect(&sockets, &m) == 0)
+        return 0;
 
     std::vector<std::thread> cpy_dir_threads;
 
