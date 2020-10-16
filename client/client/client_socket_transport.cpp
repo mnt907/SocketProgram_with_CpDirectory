@@ -247,12 +247,12 @@ namespace
                     return false;
                 }
             }
-            }
+        }
 #ifndef _WIN32
         closedir(src_dirp);
 #endif // !_WIN32
         return true;
-        }
+    }
 
     std::string InputData()
     {

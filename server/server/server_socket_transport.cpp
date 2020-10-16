@@ -487,7 +487,6 @@ int main()
     }
 #endif // _WIN32
 
-
     std::map<int, Header> client_status;
     std::queue<int> client_sockets;
     std::queue<int> seq_recv_sockets;
