@@ -1,4 +1,6 @@
 #include "header.h"
+#include "ClientStatusManage.h"
+#include "ClientSocketManage.h"
 
 const int PORT = 5555;
 const int PACKET_SIZE = 1400;
