@@ -3,7 +3,7 @@
 #include "ClientSocketManage.h"
 
 const int PORT = 5555;
-const int PACKET_SIZE = 1400;
+const int PACKET_SIZE = 1300;
 const int LISTEN_BACKLOG = 50;
 const int COUNT = 1;
 const int CPY_DIR_THREADS_SIZE = 2;
@@ -20,7 +20,6 @@ namespace
         char *pszIn = new char[multibyte_str.length() + 1];
         strncpy_s(pszIn, multibyte_str.length() + 1, multibyte_str.c_str(), multibyte_str.length());
 
-        std::string resultString;
         int nLenOfUni = 0, nLenOfUTF = 0;
         wchar_t* uni_wchar = NULL;
         char* pszOut = NULL;
@@ -42,19 +41,114 @@ namespace
 
         nLenOfUTF = WideCharToMultiByte(CP_ACP, 0, uni_wchar, nLenOfUni, pszOut, nLenOfUTF, NULL, NULL);
         pszOut[nLenOfUTF] = 0;
-        resultString = pszOut;
+        std::string resultString = pszOut;
         delete[] uni_wchar;
         delete[] pszOut;
         return resultString;
     }
 #endif // _WIN32
+    bool SendToClient(const int& socket, char* send_data)
+    {
+        int send_data_size = 0;
+        memcpy(&send_data_size, send_data, sizeof(int));
 
-    bool RecvFileData(const int& socket, const Header& header)
+        int tmp = htons(send_data_size);
+
+#ifdef _WIN32
+        int sendlen = send(socket, (char*)&tmp, sizeof(int), 0);
+#else
+        int sendlen = send(socket, (char*)&tmp, sizeof(int), MSG_NOSIGNAL);
+#endif //_WIN32
+        if (sendlen == -1)
+        {
+            std::cout << "can't send serialized header length" << std::endl;
+            return false;
+        }
+        int send_size = PACKET_SIZE;
+        char* send_data_addr = send_data;
+        while (send_data_size != 0)
+        {
+            if (send_data_size < send_size)
+                send_size = send_data_size;
+#ifdef _WIN32
+            int sendlen = send(socket, send_data, send_size, 0);
+#else
+            int sendlen = send(socket, send_data, send_size, MSG_NOSIGNAL);
+#endif //_WIN32
+            if (sendlen == -1)
+            {
+                std::cout << "can't send serialized header" << std::endl;
+                return false;
+            }
+            send_data_size -= sendlen;
+            send_data += sendlen;
+        }
+        send_data = send_data_addr;
+        return true;
+    }
+
+    bool RecvFromClient(const int& socket, Header& header)
+    {
+        int size_deserial_str = 0;
+        int recvlen = recv(socket, (char*)&size_deserial_str, sizeof(int), 0);
+        if (recvlen == -1 || size_deserial_str == 0)
+        {
+#ifdef _WIN32
+            closesocket(socket);
+#else
+            close(socket);
+#endif // _WIN32
+            std::cout << "--------------------------finish----------------------------" << std::endl;
+            return false;
+        }
+        size_deserial_str = ntohs(size_deserial_str);
+
+        char* recv_data = new char[size_deserial_str + 1];
+        memset(recv_data, 0, size_deserial_str + 1);
+        char* recv_data_addr = recv_data;
+        int recv_size = PACKET_SIZE;
+        while (size_deserial_str != 0)
+        {
+            if (size_deserial_str < PACKET_SIZE)
+                recv_size = size_deserial_str;
+
+            int recvlen = recv(socket, recv_data, recv_size, 0);
+            if (recvlen == -1)
+            {
+#ifdef _WIN32
+                closesocket(socket);
+#else
+                close(socket);
+#endif // _WIN32
+                std::cout << "--------------------------finish----------------------------" << std::endl;
+                return false;
+            }
+            recv_data += recvlen;
+            size_deserial_str -= recvlen;
+        }
+        recv_data = recv_data_addr;
+        header.Deserialize(recv_data);
+        if (header.GetFilePath().empty())
+        {
+#ifdef _WIN32
+            closesocket(socket);
+#else
+            close(socket);
+#endif // _WIN32
+            std::cout << "--------------------------finish----------------------------" << std::endl;
+            return false;
+        }
+        delete[] recv_data;
+
+        return true;
+    }
+
+    bool RecvFileData(const int& socket, Header& header)
     {
         FILE* dst_fp = NULL;
 
 #ifdef _WIN32
-        int write_fp_err = fopen_s(&dst_fp, header.file_path, "wb");
+        int write_fp_err = fopen_s(&dst_fp, header.GetFilePath().c_str(), "wb");
         if (write_fp_err != 0)
         {
             std::cout << "can't create write_filepointer" << write_fp_err << std::endl;
@@ -62,29 +156,22 @@ namespace
             {
                 Header error_header;
                 std::string error_msg = "wrong file or using file";
-                error_header.type = Header::TYPE::ERROR_SIG;
+                error_header.SetType(Header::TYPE::ERROR_SIG);
+                error_header.SetFilePath(error_msg);
+                char* serial_str = error_header.Serialization();
 
-                strncpy_s(error_header.file_path, sizeof(error_header.file_path), error_msg.c_str(), error_msg.length());
-#ifdef _WIN32
-                int sendlen = send(socket, (char*)&error_header, sizeof(error_header), 0);
-#else
-                int sendlen = send(socket, (char*)&error_header, sizeof(error_header), MSG_NOSIGNAL);
-#endif //_WIN32
-                if (sendlen == -1)
-                {
-                    std::cout << "can't send header" << std::endl;
+                if (SendToClient(socket, serial_str) == false)
                     return false;
-                }
             }
             return false;
         }
 #else 
-        dst_fp = fopen(header.file_path, "wb");
+        dst_fp = fopen(header.GetFilePath().c_str(), "wb");
 #endif // _WIN32
 
         char recv_buf[PACKET_SIZE] = { 0 };
 
-        int64_t sum_recv_len = header.length;
+        int64_t sum_recv_len = header.GetLength();
 
         int recv_size = PACKET_SIZE;
 
@@ -110,43 +197,44 @@ namespace
                 return false;
             }
             sum_recv_len -= recvlen;
+
         }
 
         fclose(dst_fp);
         return true;
     }
 
-    bool CopyDirectory(const int& socket, const Header& header)
+    bool CopyDirectory(const int& socket, Header& header)
     {
-        std::cout << "file_path : " << header.file_path << std::endl;
-        std::cout << "file_size : " << header.length << std::endl;
-        std::cout << "is_directory : " << header.is_dir << std::endl;
+        std::cout << "file_path : " << header.GetFilePath() << std::endl;
+        std::cout << "file_size : " << header.GetLength() << std::endl;
+        std::cout << "is_directory : " << header.GetIsDir() << std::endl;
 
-        if (header.is_dir == true)
+        if (header.GetIsDir() == true)
         {
             std::cout << "make directory" << std::endl;
 #ifdef _WIN32
-            int result = _mkdir(header.file_path);
+            int result = _mkdir(header.GetFilePath().c_str());
 #else
-            int result = mkdir(header.file_path, 0666);
+            int result = mkdir(header.GetFilePath().c_str(), 0666);
 #endif // _WIN32
 
             if (result != 0)
             {
                 if (errno == EEXIST)
-                    std::cout << "already exist " << header.file_path << std::endl;
+                    std::cout << "already exist " << header.GetFilePath() << std::endl;
                 else if (errno == ENOTDIR)
                 {
-                    std::cout << header.file_path << " is not directory" << std::endl;
+                    std::cout << header.GetFilePath() << " is not directory" << std::endl;
                     return false;
                 }
                 else
                 {
-                    std::cout << "mkdir error :  " << errno << "  " << header.file_path << std::endl;
+                    std::cout << "mkdir error :  " << errno << "  " << header.GetFilePath() << std::endl;
                     return false;
                 }
             }
-            std::cout << "success mkdir " << header.file_path << std::endl;
+            std::cout << "success mkdir " << header.GetFilePath() << std::endl;
         }
         else
         {
@@ -155,6 +243,7 @@ namespace
                 std::cout << "can't RecvFileData" << std::endl;
                 return false;
             }
+            //Sleep(1);
         }
         return true;
     }
@@ -182,46 +271,44 @@ namespace
 
     bool end_signal = false;
     void CopyDirectoryThread(ClientSocketManage* client_sockets, ClientStatusManage* client_status
-        , std::condition_variable* cpy_cv, std::condition_variable* recv_cv)
+        , std::condition_variable* cpy_cv, std::condition_variable* recv_cv, std::mutex* m)
     {
         std::cout << "make copy directory thread" << std::endl;
         while (end_signal == false)
         {
             std::cout << "Copy Directory Thread Num : " << std::this_thread::get_id() << std::endl;
-            std::mutex m;
-            std::unique_lock<std::mutex> lock(m);
+            std::unique_lock<std::mutex> lock(*m);
             cpy_cv->wait(lock, [&] { return end_signal || !client_status->Empty(); });
 
             if (end_signal)
                 break;
 
             ClientStatusManage::SocketInfo socket_info = client_status->Pop();
+            if (socket_info.socket == 0)
+                continue;
+
+            lock.unlock();
 
             const int socket = socket_info.socket;
             Header header = socket_info.header;
 
-            if (header.type == Header::TYPE::CONNECT)
+            if (header.GetType() == Header::TYPE::CONNECT)
             {
-                if (IsExistDirectory(header.file_path))
+                if (IsExistDirectory(header.GetFilePath()))
                 {
-                    header.is_dir = true;
-                    header.type = Header::TYPE::CHECK_DIR;
+                    header.SetIsDir(true);
+                    header.SetType(Header::TYPE::CHECK_DIR);
                 }
                 else
                 {
                     std::cout << "can't check Directory" << std::endl;
-                    header.is_dir = false;
-                    header.type = Header::TYPE::NOT_EXIST_DIR;
+                    header.SetIsDir(false);
+                    header.SetType(Header::TYPE::NOT_EXIST_DIR);
                 }
 
-                std::cout << "dst_path : " << header.file_path << std::endl;
-
-#ifdef _WIN32
-                int sendlen = send(socket, (char*)&header, sizeof(header), 0);
-#else 
-                int sendlen = send(socket, (char*)&header, sizeof(header), MSG_NOSIGNAL);
-#endif //_WIN32
-                if (sendlen == -1)
+                std::cout << "dst_path : " << header.GetFilePath() << std::endl;
+                char* serial_str = header.Serialization();
+                if (SendToClient(socket, serial_str) == false)
                 {
                     std::cout << "can't send header" << std::endl;
 #ifdef _WIN32
@@ -233,22 +320,17 @@ namespace
                     continue;
                 }
             }
-            else if (header.type == Header::TYPE::CHECK_DIR)
+            else if (header.GetType() == Header::TYPE::CHECK_DIR)
             {
                 if (CopyDirectory(socket, header) == false)
                 {
                     std::cout << "fail to copy directory" << std::endl;
 
-                    header.type = Header::TYPE::ERROR_SIG;
-#ifdef _WIN32
-                    int sendlen = send(socket, (char*)&header, sizeof(header), 0);
-#else 
-                    int sendlen = send(socket, (char*)&header, sizeof(header), MSG_NOSIGNAL);
-#endif //_WIN32
-                    if (sendlen == -1)
-                    {
+                    header.SetType(Header::TYPE::ERROR_SIG);
+                    char* serial_str = header.Serialization();
+                    if (SendToClient(socket, serial_str) == false)
                         std::cout << "can't send header" << std::endl;
-                    }
+
 #ifdef _WIN32
                     closesocket(socket);
 #else
@@ -269,7 +351,7 @@ namespace
     }
 
     void RecvHeaderThread(ClientSocketManage* client_sockets, ClientStatusManage* client_status
-        , std::condition_variable* cpy_cv, std::condition_variable* recv_cv)
+        , std::condition_variable* cpy_cv, std::condition_variable* recv_cv, std::mutex* m)
     {
         std::cout << "make recv header thread" << std::endl;
         fd_set read_set;
@@ -281,10 +363,9 @@ namespace
         while (true)
         {
             std::cout << "Recv Header Thread Num : " << std::this_thread::get_id() << std::endl;
-            std::mutex m;
-            std::unique_lock<std::mutex> lock(m);
+            std::unique_lock<std::mutex> lock(*m);
             recv_cv->wait(lock, [&] { return end_signal || !client_sockets->Empty(); });
-            
+
             lock.unlock();
             if (end_signal)
                 break;
@@ -296,18 +377,21 @@ namespace
             {
                 if (!client_sockets->Empty())
                 {
-                    FD_SET(client_sockets->Pop(), &read_set);
+                    int socket = client_sockets->Pop();
+                    if (socket != 0)
+                    {
+                        FD_SET(socket, &read_set);
 #ifndef _WIN32
-                    if (fd_max < socket)
-                        fd_max = socket;
+                        if (fd_max < socket)
+                            fd_max = socket;
 #endif // !_WIN32
+                    }
                 }
 
                 cpy_read_set = read_set;
                 time.tv_sec = 1;
                 time.tv_usec = 0;
-
-#ifdef _WIN32
+#ifdef _WIN32 
                 unsigned int fd_max = 0;
                 for (unsigned int i = 0; i < cpy_read_set.fd_count; ++i)
                 {
@@ -331,7 +415,6 @@ namespace
 
                 if (req_count == 0)
                     continue;
-
 #ifdef _WIN32
                 for (unsigned int i = 0; i < cpy_read_set.fd_count; ++i)
                 {
@@ -344,36 +427,26 @@ namespace
                     if (FD_ISSET(socket, &cpy_read_set))
                     {
                         Header header;
-                        int recvlen = recv(socket, (char*)&header, sizeof(header), 0);
-                        if (recvlen == -1 || !strcmp(header.file_path, ""))
+                        if (RecvFromClient(socket, header) == false)
                         {
                             FD_CLR(socket, &read_set);
-#ifdef _WIN32
-                            closesocket(socket);
-#else
-                            close(socket);
-#endif // _WIN32
-                            std::cout << "--------------------------finish----------------------------" << std::endl;
                             continue;
                         }
 #ifdef _WIN32
-                        const std::string converted_dst_path = Utf8ToMultiByte(header.file_path);
-
-                        memset(header.file_path, 0, sizeof(header.file_path));
-
-                        strncpy_s(header.file_path, sizeof(header.file_path), converted_dst_path.c_str(), converted_dst_path.length());
+                        const std::string converted_dst_path = Utf8ToMultiByte(header.GetFilePath());
+                        header.SetFilePath(converted_dst_path);
 #endif //_WIN32
-                        client_status->Push(socket, header);  
+                        client_status->Push(socket, header);
 
                         FD_CLR(socket, &read_set);
                         cpy_cv->notify_one();
                     }
                 }
-            }
+                }
             std::this_thread::sleep_for(std::chrono::milliseconds(80));
-        }
+            }
         std::cout << "end recv header thread" << std::endl;
-    }
+        }
 
     void SignalHandler(int signal)
     {
@@ -464,7 +537,7 @@ namespace
 
         return server_socket;
     }
-}
+    }
 
 int main()
 {
@@ -495,14 +568,15 @@ int main()
     std::condition_variable recv_cv;
     std::thread accept_thread(AcceptThread, server_socket, &client_sockets, &recv_cv);
 
+    std::mutex m;
     std::vector<std::thread> recv_header_threads;
     std::condition_variable cpy_cv;
     for (int i = 0; i < NUM_OF_RECV_HEADER_THREAD; ++i)
-        recv_header_threads.push_back(std::thread(RecvHeaderThread, &client_sockets, &client_status, &cpy_cv, &recv_cv));
+        recv_header_threads.push_back(std::thread(RecvHeaderThread, &client_sockets, &client_status, &cpy_cv, &recv_cv, &m));
 
     std::vector<std::thread> cpy_dir_threads;
     for (int i = 0; i < CPY_DIR_THREADS_SIZE; ++i)
-        cpy_dir_threads.push_back(std::thread(CopyDirectoryThread, &client_sockets, &client_status, &cpy_cv, &recv_cv));
+        cpy_dir_threads.push_back(std::thread(CopyDirectoryThread, &client_sockets, &client_status, &cpy_cv, &recv_cv, &m));
 
     accept_thread.join();
 

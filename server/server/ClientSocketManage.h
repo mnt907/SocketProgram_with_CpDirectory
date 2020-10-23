@@ -19,7 +19,9 @@ public:
     int Pop()
     {
         m.lock();
-        assert(!client_sockets.empty());
+        if (client_sockets.empty())
+            return 0;
+
         int client_socket = client_sockets.front();
         client_sockets.pop();
         m.unlock();

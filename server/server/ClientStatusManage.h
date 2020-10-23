@@ -33,11 +33,16 @@ public:
         client_status.push(SocketInfo(socket, header));
         m.unlock();
     }
-
+    
     SocketInfo Pop()
     {
         m.lock();
-        assert(!client_status.empty());
+        if (client_status.empty())
+        {
+            SocketInfo empty_socket_info;
+            return empty_socket_info;
+        }
+        
         SocketInfo socket_info = client_status.front();
         client_status.pop();
         m.unlock();
@@ -51,6 +56,6 @@ public:
         m.unlock();
         return result;
     }
-
+   
 };
 
