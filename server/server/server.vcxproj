@@ -20,7 +20,7 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>
-    <ProjectGuid>{60A825C7-2946-4BF7-A4A3-8CD0A4AD5474}</ProjectGuid>
+    <ProjectGuid>{ACF85244-47B9-4E38-AEB6-338B5D6CB6CF}</ProjectGuid>
     <RootNamespace>server</RootNamespace>
     <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
@@ -123,7 +123,16 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="ClientSocketManager.cpp" />
+    <ClCompile Include="ClientStatusManager.cpp" />
+    <ClCompile Include="header.cpp" />
     <ClCompile Include="server_socket_transport.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ClientSocketManager.h" />
+    <ClInclude Include="ClientStatusManager.h" />
+    <ClInclude Include="header.h" />
+    <ClInclude Include="include.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
