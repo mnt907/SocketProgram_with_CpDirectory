@@ -61,12 +61,12 @@ namespace
     }
 #endif //_WIN32
 
-    bool SendToServer(const int& socket, char* send_data)
+    bool SendToServer(const int socket, char* send_data)
     {
         int send_data_size = 0;
         memcpy(&send_data_size, send_data, sizeof(int));
 
-        int tmp = htons(send_data_size);
+        int tmp = htonl(send_data_size);
 #ifdef _WIN32
         int sendlen = send(socket, (char*)&tmp, sizeof(int), 0);
 #else
@@ -121,7 +121,7 @@ namespace
         return false;
     }
 
-    bool SendFileData(const std::string& src_path, const int& socket, Header& header)
+    bool SendFileData(const std::string& src_path, const int socket, Header& header)
     {
         FILE* src_fp = NULL;
 #ifdef _WIN32
@@ -185,7 +185,7 @@ namespace
         return true;
     }
 
-    bool CopyDirectory(const std::string& src_path, const std::string& dst_path, const int& socket)
+    bool CopyDirectory(const std::string& src_path, const std::string& dst_path, const int socket)
     {
 #ifdef _WIN32
         char send_buf[PACKET_SIZE] = { 0 };
@@ -279,12 +279,12 @@ namespace
                     return false;
                 }
             }
-            }
+        }
 #ifndef _WIN32
         closedir(src_dirp);
 #endif // !_WIN32
         return true;
-        }
+    }
 
     int ConnectClient(std::queue<int>* sockets, std::mutex* m)
     {
@@ -292,7 +292,7 @@ namespace
         if (client_socket == -1)
         {
             std::cout << "socket errno : " << errno << std::endl;
-            return 0;
+            return -1;
         }
 
         sockaddr_in client_addr;
@@ -309,7 +309,7 @@ namespace
         if (connect(client_socket, (sockaddr*)&client_addr, sizeof(client_addr)) == -1)
         {
             std::cout << "connect errno : " << errno << std::endl;
-            return false;
+            return -1;
         }
         m->lock();
         sockets->push(client_socket);
@@ -324,7 +324,7 @@ namespace
         for (int i = 0; i < RECONNECT_COUNT; ++i)
         {
             connect_result = ConnectClient(sockets, m);
-            if (connect_result == 0)
+            if (connect_result == -1)
             {
                 std::cout << "can't connect socket" << std::endl;
                 continue;
@@ -366,7 +366,7 @@ namespace
         return src_path;
     }
 
-    bool CheckDstPath(const int& socket)
+    bool CheckDstPath(const int socket)
     {
         std::string dst_path;
 
@@ -404,7 +404,7 @@ namespace
         else
             return "n";
     }
-    bool RecvFromServer(const int& socket, Header& header)
+    bool RecvFromServer(const int socket, Header& header)
     {
         int size_deserial_str = 0;
         int recvlen = recv(socket, (char*)&size_deserial_str, sizeof(int), 0);
@@ -418,7 +418,7 @@ namespace
 #endif // _WIN32
             return false;
         }
-        size_deserial_str = ntohs(size_deserial_str);
+        size_deserial_str = ntohl(size_deserial_str);
 
         char* recv_data = new char[size_deserial_str + 1];
         memset(recv_data, 0, size_deserial_str + 1);
@@ -449,7 +449,7 @@ namespace
         delete[] recv_data;
         return true;
     }
-    void CopyDirectoryThread(const int& socket, std::queue<int>* sockets, std::mutex* m)
+    void CopyDirectoryThread(const int socket, std::queue<int>* sockets, std::mutex* m)
     {
         fd_set cpy_read_set;
         fd_set read_set;
@@ -546,7 +546,7 @@ namespace
     {
         end_signal = true;
     }
-        }
+}
 
 int main()
 {

@@ -1,6 +1,6 @@
 #include "header.h"
-#include "ClientStatusManage.h"
-#include "ClientSocketManage.h"
+#include "ClientStatusManager.h"
+#include "ClientSocketManager.h"
 
 const int PORT = 5555;
 const int PACKET_SIZE = 1300;
@@ -20,22 +20,24 @@ namespace
         char *pszIn = new char[multibyte_str.length() + 1];
         strncpy_s(pszIn, multibyte_str.length() + 1, multibyte_str.c_str(), multibyte_str.length());
 
-        int nLenOfUni = 0, nLenOfUTF = 0;
-        wchar_t* uni_wchar = NULL;
-        char* pszOut = NULL;
-
+        int nLenOfUni = 0;
         if ((nLenOfUni = MultiByteToWideChar(CP_UTF8, 0, pszIn, (int)strlen(pszIn), NULL, 0)) <= 0)
             return 0;
+
+        wchar_t* uni_wchar = NULL;
         uni_wchar = new wchar_t[nLenOfUni + 1];
         memset(uni_wchar, 0x00, sizeof(wchar_t)*(nLenOfUni + 1));
 
         nLenOfUni = MultiByteToWideChar(CP_UTF8, 0, pszIn, (int)strlen(pszIn), uni_wchar, nLenOfUni);
 
+        int nLenOfUTF = 0;
         if ((nLenOfUTF = WideCharToMultiByte(CP_ACP, 0, uni_wchar, nLenOfUni, NULL, 0, NULL, NULL)) <= 0)
         {
             delete[] uni_wchar;
             return 0;
         }
+
+        char* pszOut = NULL;
         pszOut = new char[nLenOfUTF + 1];
         memset(pszOut, 0, sizeof(char)*(nLenOfUTF + 1));
 
@@ -47,17 +49,17 @@ namespace
         return resultString;
     }
 #endif // _WIN32
-    bool SendToClient(const int& socket, char* send_data)
+    bool SendToClient(const int socket, char* send_data)
     {
         int send_data_size = 0;
         memcpy(&send_data_size, send_data, sizeof(int));
 
-        int tmp = htons(send_data_size);
+        int byte_send_data_size = htonl(send_data_size);
 
 #ifdef _WIN32
-        int sendlen = send(socket, (char*)&tmp, sizeof(int), 0);
+        int sendlen = send(socket, (char*)&byte_send_data_size, sizeof(int), 0);
 #else
-        int sendlen = send(socket, (char*)&tmp, sizeof(int), MSG_NOSIGNAL);
+        int sendlen = send(socket, (char*)&byte_send_data_size, sizeof(int), MSG_NOSIGNAL);
 #endif //_WIN32
         if (sendlen == -1)
         {
@@ -65,14 +67,13 @@ namespace
             return false;
         }
         int send_size = PACKET_SIZE;
-        char* send_data_addr = send_data;
         while (send_data_size != 0)
         {
             if (send_data_size < send_size)
                 send_size = send_data_size;
 #ifdef _WIN32
             int sendlen = send(socket, send_data, send_size, 0);
-#else
+#else 
             int sendlen = send(socket, send_data, send_size, MSG_NOSIGNAL);
 #endif //_WIN32
             if (sendlen == -1)
@@ -83,15 +84,14 @@ namespace
             send_data_size -= sendlen;
             send_data += sendlen;
         }
-        send_data = send_data_addr;
         return true;
     }
-
-    bool RecvFromClient(const int& socket, Header& header)
+    
+    bool RecvFromClient(const int socket, Header& header)
     {
-        int size_deserial_str = 0;
-        int recvlen = recv(socket, (char*)&size_deserial_str, sizeof(int), 0);
-        if (recvlen == -1 || size_deserial_str == 0)
+        int byte_size_deserial_str = 0;
+        int recvlen = recv(socket, (char*)&byte_size_deserial_str, sizeof(int), 0);
+        if (recvlen == -1 || byte_size_deserial_str == 0)
         {
 #ifdef _WIN32
             closesocket(socket);
@@ -101,7 +101,7 @@ namespace
             std::cout << "--------------------------finish----------------------------" << std::endl;
             return false;
         }
-        size_deserial_str = ntohs(size_deserial_str);
+        int size_deserial_str = ntohl(byte_size_deserial_str);
 
         char* recv_data = new char[size_deserial_str + 1];
         memset(recv_data, 0, size_deserial_str + 1);
@@ -143,7 +143,7 @@ namespace
         return true;
     }
 
-    bool RecvFileData(const int& socket, Header& header)
+    bool RecvFileData(const int socket, const Header& header)
     {
         FILE* dst_fp = NULL;
 
@@ -197,14 +197,13 @@ namespace
                 return false;
             }
             sum_recv_len -= recvlen;
-
         }
 
         fclose(dst_fp);
         return true;
     }
 
-    bool CopyDirectory(const int& socket, Header& header)
+    bool CopyDirectory(const int socket, const Header& header)
     {
         std::cout << "file_path : " << header.GetFilePath() << std::endl;
         std::cout << "file_size : " << header.GetLength() << std::endl;
@@ -218,7 +217,6 @@ namespace
 #else
             int result = mkdir(header.GetFilePath().c_str(), 0666);
 #endif // _WIN32
-
             if (result != 0)
             {
                 if (errno == EEXIST)
@@ -270,7 +268,7 @@ namespace
     }
 
     bool end_signal = false;
-    void CopyDirectoryThread(ClientSocketManage* client_sockets, ClientStatusManage* client_status
+    void CopyDirectoryThread(ClientSocketManager* client_sockets, ClientStatusManager* client_status
         , std::condition_variable* cpy_cv, std::condition_variable* recv_cv, std::mutex* m)
     {
         std::cout << "make copy directory thread" << std::endl;
@@ -283,7 +281,7 @@ namespace
             if (end_signal)
                 break;
 
-            ClientStatusManage::SocketInfo socket_info = client_status->Pop();
+            ClientStatusManager::SocketInfo socket_info = client_status->Pop();
             if (socket_info.socket == 0)
                 continue;
 
@@ -305,7 +303,7 @@ namespace
                     header.SetIsDir(false);
                     header.SetType(Header::TYPE::NOT_EXIST_DIR);
                 }
-
+                
                 std::cout << "dst_path : " << header.GetFilePath() << std::endl;
                 char* serial_str = header.Serialization();
                 if (SendToClient(socket, serial_str) == false)
@@ -350,7 +348,7 @@ namespace
         std::cout << "end copy directory thread" << std::endl;
     }
 
-    void RecvHeaderThread(ClientSocketManage* client_sockets, ClientStatusManage* client_status
+    void RecvHeaderThread(ClientSocketManager* client_sockets, ClientStatusManager* client_status
         , std::condition_variable* cpy_cv, std::condition_variable* recv_cv, std::mutex* m)
     {
         std::cout << "make recv header thread" << std::endl;
@@ -378,7 +376,7 @@ namespace
                 if (!client_sockets->Empty())
                 {
                     int socket = client_sockets->Pop();
-                    if (socket != 0)
+                    if (socket != -1)
                     {
                         FD_SET(socket, &read_set);
 #ifndef _WIN32
@@ -442,18 +440,18 @@ namespace
                         cpy_cv->notify_one();
                     }
                 }
-                }
-            std::this_thread::sleep_for(std::chrono::milliseconds(80));
             }
-        std::cout << "end recv header thread" << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
         }
+        std::cout << "end recv header thread" << std::endl;
+    }
 
     void SignalHandler(int signal)
     {
         end_signal = true;
     }
 
-    void AcceptThread(const int& server_socket, ClientSocketManage* client_sockets, std::condition_variable* recv_cv)
+    void AcceptThread(const int server_socket, ClientSocketManager* client_sockets, std::condition_variable* recv_cv)
     {
         std::signal(SIGINT, SignalHandler);
 
@@ -486,7 +484,7 @@ namespace
 
             if (req_count == 0)
                 continue;
-
+            
             if (FD_ISSET(server_socket, &cpy_read_set))
             {
                 sockaddr_in client_addr;
@@ -512,7 +510,7 @@ namespace
         if (server_socket == -1)
         {
             std::cout << "socket errno : " << errno << std::endl;
-            return server_socket;
+            return -1;
         }
         sockaddr_in server_addr;
         server_addr.sin_family = AF_INET;
@@ -537,7 +535,7 @@ namespace
 
         return server_socket;
     }
-    }
+}
 
 int main()
 {
@@ -546,7 +544,7 @@ int main()
     if (WSAStartup(MAKEWORD(2, 2), &wsa_data) == -1)
     {
         std::cout << "WSAStartup errno : " << errno << std::endl;
-        return false;
+        return 0;
     }
 #endif // _WIN32
 
@@ -562,8 +560,8 @@ int main()
         else
             break;
     }
-    ClientSocketManage client_sockets;
-    ClientStatusManage client_status;
+    ClientSocketManager client_sockets;
+    ClientStatusManager client_status;
 
     std::condition_variable recv_cv;
     std::thread accept_thread(AcceptThread, server_socket, &client_sockets, &recv_cv);
@@ -603,5 +601,5 @@ int main()
 #endif // _WIN32
 
 
-    return true;
+    return 1;
 }
