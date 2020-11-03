@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+message Header
+{
+    enum TYPE
+    {
+        CONNECT = 0;
+        CHECK_DIR = 1;
+        NOT_EXIST_DIR = 2;
+        ERROR_SIG = 3; 
+    }
+
+    TYPE m_type = 1;
+    int64 m_length = 2;
+    bool m_is_dir = 3;
+    string m_file_path = 4;
+}
