@@ -1,0 +1,23 @@
+server : ClientSocketManager.o ClientStatusManager.o server.o header.o
+	g++ -g *.o -o server -L/home/mnt907/study/protobuf/protobuf-3.8.0/cmake/libprotobuf.a -lstdc++ -lpthread -lprotobuf
+	
+server.o : ClientSocketManager.o ClientStatusManager.o
+	g++ -g -c server.cpp -o server.o -pthread -Wall -std=c++11 -I/home/mnt907/study/protobuf/protobuf-3.8.0/src/ 
+
+ClientSocketManager.o : ClientSocketManager.cpp
+	g++ -g -c ClientSocketManager.cpp -o ClientSocketManager.o -pthread -Wall -std=c++11 -I/home/mnt907/study/protobuf/protobuf-3.8.0/src/
+
+ClientStatusManager.o : ClientStatusManager.cpp
+	g++ -g -c ClientStatusManager.cpp -o ClientStatusManager.o -pthread -Wall -std=c++11 -I/home/mnt907/study/protobuf/protobuf-3.8.0/src/
+	
+client : client.o header.o
+	g++ -g *.o -o client -L/home/mnt907/study/protobuf/protobuf-3.8.0/cmake/libprotobuf.a -lstdc++ -lpthread -lprotobuf
+	
+client.o : client.cpp
+	g++ -g -c client.cpp -o client.o -pthread -Wall -std=c++11 -I/home/mnt907/study/protobuf/protobuf-3.8.0/src/ 
+
+header.o : header.pb.cc
+	g++ -g -c header.pb.cc -o header.o -pthread -Wall -std=c++11 -I/home/mnt907/study/protobuf/protobuf-3.8.0/src/
+	
+clean :
+	rm *.o
